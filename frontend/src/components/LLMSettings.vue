@@ -233,7 +233,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { getLLMConfig, createOrUpdateLLMConfig, deleteLLMConfig, type LLMConfigCreate } from '@/api/llm';
+import { getLLMConfig, createOrUpdateLLMConfig, deleteLLMConfig, getAvailableModels, type LLMConfigCreate } from '@/api/llm';
 
 interface LLMSettingsForm {
   llm_provider_url: string;
@@ -385,6 +385,20 @@ const extractApiErrorMessage = (payload: unknown): string => {
   return typeof message === 'string' ? message : '';
 };
 
+const isLikelyBrowserNetworkError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    error.name === 'TypeError'
+    || message.includes('failed to fetch')
+    || message.includes('networkerror')
+    || message.includes('net::err_failed')
+    || message.includes('cors')
+  );
+};
+
 const fetchOpenAIModels = async (apiKey: string, apiUrl: string): Promise<string[]> => {
   const endpoint = normalizeModelsEndpoint(apiUrl);
   if (!endpoint) {
@@ -418,6 +432,38 @@ const fetchOpenAIModels = async (apiKey: string, apiUrl: string): Promise<string
   return modelIds.sort((a, b) => a.localeCompare(b));
 };
 
+const fetchModelsViaBackend = async (apiKey: string, apiUrl: string): Promise<string[]> => {
+  const models = await getAvailableModels({
+    llm_provider_api_key: apiKey,
+    llm_provider_url: apiUrl,
+  });
+
+  if (!Array.isArray(models)) {
+    return [];
+  }
+
+  return models
+    .filter((model): model is string => typeof model === 'string' && model.length > 0)
+    .sort((a, b) => a.localeCompare(b));
+};
+
+const fetchModelsWithFallback = async (apiKey: string, apiUrl: string): Promise<string[]> => {
+  try {
+    return await fetchOpenAIModels(apiKey, apiUrl);
+  } catch (frontendError) {
+    if (!isLikelyBrowserNetworkError(frontendError)) {
+      throw frontendError;
+    }
+
+    const backendModels = await fetchModelsViaBackend(apiKey, apiUrl);
+    if (backendModels.length > 0) {
+      return backendModels;
+    }
+
+    throw frontendError;
+  }
+};
+
 const loadModels = async () => {
   if (isLoadingModels.value) {
     return;
@@ -439,7 +485,7 @@ const loadModels = async () => {
   isLoadingModels.value = true;
   lastLoadError.value = '';
   try {
-    const models = await fetchOpenAIModels(apiKey, apiUrl);
+    const models = await fetchModelsWithFallback(apiKey, apiUrl);
     availableModels.value = models;
     if (models.length > 0) {
       showModelDropdown.value = true;
@@ -480,7 +526,7 @@ const loadEmbeddingModels = async () => {
   isLoadingEmbeddingModels.value = true;
   lastEmbeddingLoadError.value = '';
   try {
-    const models = await fetchOpenAIModels(apiKey, apiUrl);
+    const models = await fetchModelsWithFallback(apiKey, apiUrl);
     availableEmbeddingModels.value = models;
     if (models.length > 0) {
       showEmbeddingModelDropdown.value = true;
