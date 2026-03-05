@@ -106,7 +106,7 @@
                       'w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0',
                       isChapterCompleted(chapter.chapter_number)
                         ? 'bg-[var(--md-success)] text-[var(--md-on-success)]'
-                        : isChapterGenerating(chapter.chapter_number) || isChapterEvaluating(chapter.chapter_number) || isChapterSelecting(chapter.chapter_number)
+                        : isChapterGeneratingLike(chapter.chapter_number) || isChapterEvaluating(chapter.chapter_number) || isChapterSelecting(chapter.chapter_number)
                         ? 'bg-[var(--md-primary)] text-[var(--md-on-primary)] animate-pulse'
                         : isChapterFailed(chapter.chapter_number)
                         ? 'bg-[var(--md-error)] text-[var(--md-on-error)]'
@@ -118,7 +118,7 @@
                     <svg v-if="isChapterCompleted(chapter.chapter_number)" class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                       <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
                     </svg>
-                    <svg v-else-if="isChapterGenerating(chapter.chapter_number) || isChapterSelecting(chapter.chapter_number)" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+                    <svg v-else-if="isChapterGeneratingLike(chapter.chapter_number) || isChapterSelecting(chapter.chapter_number)" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
                       <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
                     </svg>
                     <svg v-else-if="isChapterEvaluating(chapter.chapter_number)" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
@@ -147,7 +147,7 @@
                         已完成
                       </span>
                       <span
-                        v-else-if="isChapterGenerating(chapter.chapter_number)"
+                        v-else-if="isChapterGeneratingLike(chapter.chapter_number)"
                         class="md-chip animate-pulse"
                         style="background-color: var(--md-primary-container); color: var(--md-on-primary-container);"
                       >
@@ -186,9 +186,14 @@
                   </div>
 
                   <!-- 章节操作按钮 -->
-                  <div class="flex items-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                  <div
+                    :class="[
+                      'flex flex-shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-200',
+                      shouldStackActions(chapter.chapter_number) ? 'flex-col items-center gap-1' : 'items-center gap-1'
+                    ]"
+                  >
                     <button
-                      v-if="!isChapterCompleted(chapter.chapter_number)"
+                      v-if="canEditChapter(chapter.chapter_number)"
                       @click.stop="$emit('editChapter', chapter)"
                       class="md-icon-btn md-ripple"
                       title="编辑大纲"
@@ -199,7 +204,7 @@
                       </svg>
                     </button>
                     <button
-                      v-if="canGenerateChapter(chapter.chapter_number) || isChapterFailed(chapter.chapter_number) || hasChapterInProgress(chapter.chapter_number)"
+                      v-if="canShowGenerateAction(chapter.chapter_number)"
                       @click.stop="confirmGenerateChapter(chapter.chapter_number)"
                       :disabled="generatingChapter === chapter.chapter_number || isChapterGenerating(chapter.chapter_number)"
                       class="md-icon-btn md-ripple disabled:opacity-50"
@@ -393,6 +398,10 @@ const isChapterGenerating = (chapterNumber: number) => {
   return chapter && chapter.generation_status === 'generating'
 }
 
+const isChapterGeneratingLike = (chapterNumber: number) => {
+  return props.generatingChapter === chapterNumber || isChapterGenerating(chapterNumber)
+}
+
 const isChapterEvaluating = (chapterNumber: number) => {
   if (!props.project?.chapters) return false
   const chapter = props.project.chapters.find(ch => ch.chapter_number === chapterNumber)
@@ -409,6 +418,18 @@ const isChapterSelecting = (chapterNumber: number) => {
   if (!props.project?.chapters) return false
   const chapter = props.project.chapters.find(ch => ch.chapter_number === chapterNumber)
   return chapter && chapter.generation_status === 'selecting'
+}
+
+const canEditChapter = (chapterNumber: number) => {
+  return !isChapterCompleted(chapterNumber)
+}
+
+const canShowGenerateAction = (chapterNumber: number) => {
+  return canGenerateChapter(chapterNumber) || isChapterFailed(chapterNumber) || hasChapterInProgress(chapterNumber)
+}
+
+const shouldStackActions = (chapterNumber: number) => {
+  return canEditChapter(chapterNumber) && canShowGenerateAction(chapterNumber)
 }
 
 const canGenerateChapter = (chapterNumber: number) => {

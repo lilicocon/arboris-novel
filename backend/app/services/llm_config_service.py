@@ -43,6 +43,8 @@ class LLMConfigService:
             return "azure"
         elif "cohere" in host:
             return "cohere"
+        elif "ollama" in host or ":11434" in host or host.endswith("11434"):
+            return "ollama"
         elif "together" in host or "together.ai" in host:
             return "together"
         elif "deepseek" in host:
@@ -56,6 +58,22 @@ class LLMConfigService:
         else:
             # 默认使用 OpenAI-like API
             return "openai-like"
+
+    @staticmethod
+    def _normalize_ollama_base_url(base_url: Optional[str]) -> str:
+        """归一化 Ollama 地址，兼容误填 /v1、/api 等后缀。"""
+        candidate = (base_url or "http://localhost:11434").strip().rstrip("/")
+        removable_suffixes = ("/v1/models", "/v1/embeddings", "/v1", "/api")
+        changed = True
+        while changed:
+            changed = False
+            lowered = candidate.lower()
+            for suffix in removable_suffixes:
+                if lowered.endswith(suffix):
+                    candidate = candidate[: -len(suffix)].rstrip("/")
+                    changed = True
+                    break
+        return candidate or "http://localhost:11434"
 
     def _build_url(self, base_url: Optional[str], default_url: str, path_suffix: str) -> str:
         """统一的 URL 构建逻辑，避免路径重复"""
@@ -98,16 +116,17 @@ class LLMConfigService:
         return True
 
     async def get_available_models(
-        self, api_key: str, base_url: Optional[str] = None
+        self, api_key: Optional[str], base_url: Optional[str] = None
     ) -> List[str]:
         """使用指定的凭证获取可用的模型列表"""
-        if not api_key:
-            logger.warning("获取模型列表失败：未提供 API Key")
-            return []
-
         # 识别提供商
         provider = self._identify_provider(base_url)
-        logger.info("识别到 LLM 提供商: %s (base_url: %s)", provider, base_url)
+        logger.info(
+            "识别到 LLM 提供商: %s (base_url: %s, has_api_key=%s)",
+            provider,
+            base_url,
+            bool(api_key),
+        )
 
         try:
             # 根据不同提供商获取模型列表
@@ -119,6 +138,8 @@ class LLMConfigService:
                 return await self._get_azure_models(api_key, base_url)
             elif provider == "cohere":
                 return await self._get_cohere_models(api_key, base_url)
+            elif provider == "ollama":
+                return await self._get_ollama_models(base_url)
             else:
                 # OpenAI 和 OpenAI-like (包括 together, deepseek, moonshot, zhipu 等)
                 return await self._get_openai_like_models(api_key, base_url)
@@ -136,10 +157,14 @@ class LLMConfigService:
 
             return []
 
-    async def _get_openai_like_models(self, api_key: str, base_url: Optional[str]) -> List[str]:
+    async def _get_openai_like_models(self, api_key: Optional[str], base_url: Optional[str]) -> List[str]:
         """获取 OpenAI 或 OpenAI-like API 的模型列表"""
         import httpx
         from openai import APIConnectionError, APIError
+
+        if not api_key:
+            # 无 Key 场景下直接走 HTTP（不带 Authorization）
+            return await self._get_models_via_http(api_key=None, base_url=base_url)
 
         try:
             # 创建带有超时和重试配置的客户端
@@ -169,7 +194,7 @@ class LLMConfigService:
             logger.error("获取 OpenAI-like 模型列表失败: %s", str(e), exc_info=True)
             return await self._get_models_via_http(api_key, base_url)
 
-    async def _get_models_via_http(self, api_key: str, base_url: Optional[str]) -> List[str]:
+    async def _get_models_via_http(self, api_key: Optional[str], base_url: Optional[str]) -> List[str]:
         """使用 httpx 直接请求模型列表（备选方案）"""
         import httpx
 
@@ -180,10 +205,9 @@ class LLMConfigService:
             else:
                 url = 'https://api.openai.com/v1/models'
 
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
 
             logger.info("使用 HTTP 直接请求模型列表: url=%s", url)
 
@@ -216,6 +240,30 @@ class LLMConfigService:
             return []
         except Exception as e:
             logger.error("HTTP 请求失败: %s", str(e), exc_info=True)
+            return []
+
+    async def _get_ollama_models(self, base_url: Optional[str]) -> List[str]:
+        """获取 Ollama 本地模型列表（无需 API Key）。"""
+        import httpx
+
+        normalized_base = self._normalize_ollama_base_url(base_url)
+        tags_url = f"{normalized_base}/api/tags"
+        try:
+            logger.info("请求 Ollama 模型列表: url=%s", tags_url)
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.get(tags_url)
+                response.raise_for_status()
+                payload = response.json()
+            models = payload.get("models", []) if isinstance(payload, dict) else []
+            model_names = [
+                model.get("name")
+                for model in models
+                if isinstance(model, dict) and isinstance(model.get("name"), str) and model.get("name")
+            ]
+            logger.info("成功获取 %d 个 Ollama 模型", len(model_names))
+            return sorted(model_names)
+        except Exception as e:
+            logger.error("获取 Ollama 模型列表失败: base=%s error=%s", normalized_base, str(e), exc_info=True)
             return []
 
     async def _get_anthropic_models(self, api_key: str, base_url: Optional[str]) -> List[str]:

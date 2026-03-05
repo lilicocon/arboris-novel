@@ -157,8 +157,36 @@ class NovelService:
         user_id: int,
         chapter_number: int,
     ) -> ChapterSchema:
-        project = await self.ensure_project_owner(project_id, user_id)
-        return self._build_chapter_schema(project, chapter_number)
+        await self._ensure_project_owner_light(project_id, user_id)
+
+        chapter_stmt = (
+            select(Chapter)
+            .where(
+                Chapter.project_id == project_id,
+                Chapter.chapter_number == chapter_number,
+            )
+            .options(
+                selectinload(Chapter.versions),
+                selectinload(Chapter.evaluations),
+                selectinload(Chapter.selected_version),
+            )
+        )
+        chapter_result = await self.session.execute(chapter_stmt)
+        chapter = chapter_result.scalars().first()
+
+        outline_stmt = select(ChapterOutline).where(
+            ChapterOutline.project_id == project_id,
+            ChapterOutline.chapter_number == chapter_number,
+        )
+        outline_result = await self.session.execute(outline_stmt)
+        outline = outline_result.scalars().first()
+
+        return self._build_chapter_schema_from_entities(
+            chapter_number=chapter_number,
+            outline=outline,
+            chapter=chapter,
+            include_content=True,
+        )
 
     async def list_projects_for_user(self, user_id: int) -> List[NovelProjectSummary]:
         projects = await self.repo.list_by_user(user_id)
@@ -216,6 +244,16 @@ class NovelService:
     async def count_projects(self) -> int:
         result = await self.session.execute(select(func.count(NovelProject.id)))
         return result.scalar_one()
+
+    async def _ensure_project_owner_light(self, project_id: str, user_id: int) -> None:
+        result = await self.session.execute(
+            select(NovelProject.user_id).where(NovelProject.id == project_id)
+        )
+        owner_id = result.scalar_one_or_none()
+        if owner_id is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+        if owner_id != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该项目")
 
     # ------------------------------------------------------------------
     # 对话管理
@@ -455,6 +493,10 @@ class NovelService:
             self.session.add(version)
             versions.append(version)
         chapter.status = ChapterGenerationStatus.WAITING_FOR_CONFIRM.value
+        chapter.generation_progress = 100
+        chapter.generation_step = "waiting_for_confirm"
+        chapter.generation_step_index = 7
+        chapter.generation_step_total = 7
         await self.session.commit()
         await self.session.refresh(chapter)
         await self._touch_project(chapter.project_id)
@@ -475,6 +517,10 @@ class NovelService:
         
         chapter.selected_version_id = selected.id
         chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
+        chapter.generation_progress = 100
+        chapter.generation_step = "completed"
+        chapter.generation_step_index = 7
+        chapter.generation_step_total = 7
         chapter.word_count = len(selected.content or "")
         await self.session.commit()
         await self.session.refresh(chapter)
@@ -490,6 +536,10 @@ class NovelService:
         )
         self.session.add(evaluation)
         chapter.status = ChapterGenerationStatus.WAITING_FOR_CONFIRM.value
+        chapter.generation_progress = 100
+        chapter.generation_step = "evaluation_done"
+        chapter.generation_step_index = 3
+        chapter.generation_step_total = 3
         await self.session.commit()
         await self.session.refresh(chapter)
         await self._touch_project(chapter.project_id)
@@ -708,6 +758,21 @@ class NovelService:
         outline = outlines.get(chapter_number)
         chapter = chapters.get(chapter_number)
 
+        return self._build_chapter_schema_from_entities(
+            chapter_number=chapter_number,
+            outline=outline,
+            chapter=chapter,
+            include_content=include_content,
+        )
+
+    def _build_chapter_schema_from_entities(
+        self,
+        *,
+        chapter_number: int,
+        outline: Optional[ChapterOutline],
+        chapter: Optional[Chapter],
+        include_content: bool = True,
+    ) -> ChapterSchema:
         if not outline and not chapter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="章节不存在")
 
@@ -746,5 +811,13 @@ class NovelService:
             versions=versions,
             evaluation=evaluation_text,
             generation_status=ChapterGenerationStatus(status_value),
+            generation_progress=chapter.generation_progress if chapter else 0,
+            generation_step=chapter.generation_step if chapter else None,
+            generation_step_index=chapter.generation_step_index if chapter else 0,
+            generation_step_total=chapter.generation_step_total if chapter else 0,
+            generation_started_at=chapter.__dict__.get("generation_started_at") if chapter else None,
+            # updated_at 可能因 DB 侧 onupdate 在 commit 后被标记为 expired；
+            # 序列化阶段只读取已加载值，避免触发异步懒加载导致 MissingGreenlet。
+            status_updated_at=chapter.__dict__.get("updated_at") if chapter else None,
             word_count=word_count,
         )

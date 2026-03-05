@@ -123,10 +123,25 @@ async def _ensure_schema_updates() -> None:
                 if "metadata" not in columns:
                     sync_conn.execute(text("ALTER TABLE chapter_outlines ADD COLUMN metadata JSON"))
 
+            if "chapters" in table_names:
+                chapter_columns = {col["name"] for col in inspector.get_columns("chapters")}
+                if "generation_progress" not in chapter_columns:
+                    sync_conn.execute(text("ALTER TABLE chapters ADD COLUMN generation_progress INTEGER DEFAULT 0"))
+                if "generation_step" not in chapter_columns:
+                    sync_conn.execute(text("ALTER TABLE chapters ADD COLUMN generation_step VARCHAR(64)"))
+                if "generation_step_index" not in chapter_columns:
+                    sync_conn.execute(text("ALTER TABLE chapters ADD COLUMN generation_step_index INTEGER DEFAULT 0"))
+                if "generation_step_total" not in chapter_columns:
+                    sync_conn.execute(text("ALTER TABLE chapters ADD COLUMN generation_step_total INTEGER DEFAULT 0"))
+                if "generation_started_at" not in chapter_columns:
+                    sync_conn.execute(text("ALTER TABLE chapters ADD COLUMN generation_started_at DATETIME"))
+
             if "llm_configs" in table_names:
                 llm_columns = {col["name"] for col in inspector.get_columns("llm_configs")}
                 if "embedding_provider_url" not in llm_columns:
                     sync_conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_provider_url TEXT"))
+                if "embedding_provider_api_key" not in llm_columns:
+                    sync_conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_provider_api_key TEXT"))
                 if "embedding_provider_model" not in llm_columns:
                     sync_conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_provider_model TEXT"))
         await conn.run_sync(_upgrade)

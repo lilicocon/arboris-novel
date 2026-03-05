@@ -106,7 +106,7 @@ SYSTEM_CONFIG_DEFAULTS: list[SystemConfigDefault] = [
     SystemConfigDefault(
         key="writer.chapter_versions",
         value_getter=lambda config: _to_optional_str(config.writer_chapter_versions),
-        description="每次生成章节的候选版本数量。",
+        description="每次生成章节的候选版本数量（支持 1~2）。",
     ),
     SystemConfigDefault(
         key="embedding.provider",

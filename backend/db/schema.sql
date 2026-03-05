@@ -91,6 +91,11 @@ CREATE TABLE IF NOT EXISTS chapters (
     chapter_number INT NOT NULL,
     real_summary TEXT NULL,
     status VARCHAR(32) DEFAULT 'not_generated',
+    generation_progress INT DEFAULT 0,
+    generation_step VARCHAR(64) NULL,
+    generation_step_index INT DEFAULT 0,
+    generation_step_total INT DEFAULT 0,
+    generation_started_at TIMESTAMP NULL,
     word_count INT DEFAULT 0,
     selected_version_id BIGINT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -133,6 +138,7 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     llm_provider_api_key TEXT NULL,
     llm_provider_model TEXT NULL,
     embedding_provider_url TEXT NULL,
+    embedding_provider_api_key TEXT NULL,
     embedding_provider_model TEXT NULL,
     CONSTRAINT fk_llm_configs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );

@@ -140,6 +140,7 @@ const showEditChapterModal = ref(false)
 const editingChapter = ref<ChapterOutline | null>(null)
 const isGeneratingOutline = ref(false)
 const showGenerateOutlineModal = ref(false)
+const isFetchingChapterStatus = ref(false)
 
 // 计算属性
 const project = computed(() => novelStore.currentProject)
@@ -357,15 +358,19 @@ const loadProject = async () => {
 }
 
 const fetchChapterStatus = async () => {
-  if (selectedChapterNumber.value === null) {
+  if (selectedChapterNumber.value === null || isFetchingChapterStatus.value) {
     return
   }
+  const chapterNumber = selectedChapterNumber.value
+  isFetchingChapterStatus.value = true
   try {
-    await novelStore.loadChapter(selectedChapterNumber.value)
+    await novelStore.loadChapter(chapterNumber)
     console.log('Chapter status polled and updated.')
   } catch (error) {
     console.error('轮询章节状态失败:', error)
     // 在这里可以决定是否要通知用户轮询失败
+  } finally {
+    isFetchingChapterStatus.value = false
   }
 }
 
@@ -405,12 +410,19 @@ const generateChapter = async (chapterNumber: number) => {
   try {
     generatingChapter.value = chapterNumber
     selectedChapterNumber.value = chapterNumber
+    const nowIso = new Date().toISOString()
 
     // 在本地更新章节状态为generating
     if (project.value?.chapters) {
       const chapter = project.value.chapters.find(ch => ch.chapter_number === chapterNumber)
       if (chapter) {
         chapter.generation_status = 'generating'
+        chapter.generation_progress = 0
+        chapter.generation_step = 'context_prep'
+        chapter.generation_step_index = 1
+        chapter.generation_step_total = null
+        chapter.generation_started_at = nowIso
+        chapter.status_updated_at = nowIso
       } else {
         // If chapter does not exist, create a temporary one to show generating state
         const outline = project.value.blueprint?.chapter_outline?.find(o => o.chapter_number === chapterNumber)
@@ -421,7 +433,13 @@ const generateChapter = async (chapterNumber: number) => {
           content: '',
           versions: [],
           evaluation: null,
-          generation_status: 'generating'
+          generation_status: 'generating',
+          generation_progress: 0,
+          generation_step: 'context_prep',
+          generation_step_index: 1,
+          generation_step_total: null,
+          generation_started_at: nowIso,
+          status_updated_at: nowIso
         } as Chapter)
       }
     }
@@ -441,6 +459,7 @@ const generateChapter = async (chapterNumber: number) => {
       const chapter = project.value.chapters.find(ch => ch.chapter_number === chapterNumber)
       if (chapter) {
         chapter.generation_status = 'failed'
+        chapter.status_updated_at = new Date().toISOString()
       }
     }
 

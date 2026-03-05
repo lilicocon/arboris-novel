@@ -11,25 +11,64 @@ interface AuthOptions {
   enable_linuxdo_login: boolean;
 }
 
+interface FetchWithAuthOptions extends RequestInit {
+  timeoutMs?: number;
+  debugTag?: string;
+}
+
 // Helper function to handle fetch requests and token refreshing
-async function fetchWithAuth(url: string, options: RequestInit = {}) {
+async function fetchWithAuth(url: string, options: FetchWithAuthOptions = {}) {
+  const { timeoutMs = 15000, debugTag = 'request', ...requestOptions } = options;
   const authStore = useAuthStore();
-  const headers = new Headers(options.headers || {});
+  const method = String(requestOptions.method || 'GET').toUpperCase();
+  const headers = new Headers(requestOptions.headers || {});
+  const controller = new AbortController();
+  const startedAt = performance.now();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  console.log(`[auth:${debugTag}] -> ${method} ${url}`, {
+    hasToken: Boolean(authStore.token),
+    timeoutMs,
+  });
   
   if (authStore.token) {
     headers.set('Authorization', `Bearer ${authStore.token}`);
   }
 
-  options.headers = headers;
-  const response = await fetch(url, options);
+  try {
+    const response = await fetch(url, {
+      ...requestOptions,
+      headers,
+      signal: controller.signal,
+    });
 
-  const refreshedToken = response.headers.get('X-Token-Refresh');
-  if (refreshedToken) {
-    authStore.token = refreshedToken;
-    localStorage.setItem('token', refreshedToken);
+    console.log(`[auth:${debugTag}] <- ${method} ${url}`, {
+      status: response.status,
+      ok: response.ok,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+
+    const refreshedToken = response.headers.get('X-Token-Refresh');
+    if (refreshedToken) {
+      authStore.token = refreshedToken;
+      localStorage.setItem('token', refreshedToken);
+      console.log(`[auth:${debugTag}] token refreshed`);
+    }
+
+    return response;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      const timeoutError = new Error(`Request timed out after ${timeoutMs}ms: ${method} ${url}`);
+      console.error(`[auth:${debugTag}] timeout`, timeoutError);
+      throw timeoutError;
+    }
+    console.error(`[auth:${debugTag}] request failed`, error);
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
-
-  return response;
 }
 
 interface User {
@@ -77,12 +116,15 @@ export const useAuthStore = defineStore('auth', {
     },
     async login(username: string, password: string): Promise<boolean> {
       const params = new URLSearchParams();
+      params.append('grant_type', 'password');
       params.append('username', username);
       params.append('password', password);
 
       const response = await fetchWithAuth(`${API_URL}/token`, {
         method: 'POST',
         body: params,
+        timeoutMs: 15000,
+        debugTag: 'login/token',
       });
 
       if (!response.ok) {
@@ -90,15 +132,28 @@ export const useAuthStore = defineStore('auth', {
       }
 
       const data = await response.json();
-      this.token = data.access_token;
-      if (this.token) {
-        localStorage.setItem('token', this.token);
+      if (!data?.access_token) {
+        throw new Error('Missing access token in login response');
       }
+      const accessToken = String(data.access_token);
+      this.token = accessToken;
+      localStorage.setItem('token', accessToken);
       const mustChangePassword = Boolean(data.must_change_password);
-      await this.fetchUser();
-      if (this.user) {
-        this.user.must_change_password = mustChangePassword || this.user.must_change_password;
+      try {
+        await this.fetchUser({
+          logoutOnFailure: false,
+          timeoutMs: 10000,
+          debugTag: 'login/users-me',
+        });
+      } catch (error) {
+        this.logout();
+        throw new Error('Failed to initialize user session');
       }
+      if (!this.user) {
+        this.logout();
+        throw new Error('Failed to initialize user session');
+      }
+      this.user.must_change_password = mustChangePassword || this.user.must_change_password;
       return mustChangePassword;
     },
     // 当前注册流程在 Register.vue 中实现，此处预留方法以兼容旧逻辑
@@ -119,25 +174,35 @@ export const useAuthStore = defineStore('auth', {
       this.user = null;
       localStorage.removeItem('token');
     },
-    async fetchUser() {
-      if (this.token) {
-        try {
-          const response = await fetchWithAuth(`${API_URL}/users/me`);
+    async fetchUser(options: { logoutOnFailure?: boolean; timeoutMs?: number; debugTag?: string } = {}): Promise<User | null> {
+      if (!this.token) {
+        this.user = null;
+        return null;
+      }
+      const { logoutOnFailure = true } = options;
+      try {
+        const response = await fetchWithAuth(`${API_URL}/users/me`, {
+          timeoutMs: options.timeoutMs ?? 10000,
+          debugTag: options.debugTag ?? 'fetchUser/me',
+        });
 
-          if (!response.ok) {
-            throw new Error('Failed to fetch user');
-          }
+        if (!response.ok) {
+          throw new Error('Failed to fetch user');
+        }
 
-          const userData = await response.json();
-          this.user = {
-            id: userData.id,
-            username: userData.username,
-            is_admin: userData.is_admin || false,
-            must_change_password: userData.must_change_password || false,
-          };
-        } catch (error) {
+        const userData = await response.json();
+        this.user = {
+          id: userData.id,
+          username: userData.username,
+          is_admin: userData.is_admin || false,
+          must_change_password: userData.must_change_password || false,
+        };
+        return this.user;
+      } catch (error) {
+        if (logoutOnFailure) {
           this.logout();
         }
+        throw error;
       }
     },
   },

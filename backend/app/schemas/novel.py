@@ -1,4 +1,5 @@
 # AIMETA P=小说模式_小说和章节请求响应|R=小说结构_章节结构|NR=不含业务逻辑|E=NovelSchema_ChapterSchema|X=internal|A=Pydantic模式|D=pydantic|S=none|RD=./README.ai
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -60,6 +61,13 @@ class Chapter(ChapterOutline):
     versions: Optional[List[str]] = None
     evaluation: Optional[str] = None
     generation_status: ChapterGenerationStatus = ChapterGenerationStatus.NOT_GENERATED
+    generation_progress: Optional[int] = None
+    generation_step: Optional[str] = None
+    generation_step_index: Optional[int] = None
+    generation_step_total: Optional[int] = None
+    generation_started_at: Optional[datetime] = None
+    status_updated_at: Optional[datetime] = None
+    word_count: Optional[int] = None
 
 
 class Relationship(BaseModel):

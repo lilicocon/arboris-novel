@@ -146,7 +146,7 @@
               v-model="config.embedding_provider_url"
               type="text"
               class="block w-full px-3 py-2 pr-10 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-              placeholder="https://api.example.com/v1"
+              placeholder="http://127.0.0.1:11434（Ollama 不要带 /v1）"
             >
             <button
               type="button"
@@ -156,6 +156,54 @@
             >
               <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
                 <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </div>
+          <p class="mt-2 text-xs text-amber-600">
+            使用 Ollama 向量模型时，地址应为 <code class="font-mono">http://host:11434</code>，不要追加 <code class="font-mono">/v1</code>。
+          </p>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            v-model="useDedicatedEmbeddingApiKey"
+            type="checkbox"
+            class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+          >
+          使用独立向量 API Key（可选）
+        </label>
+        <div v-if="useDedicatedEmbeddingApiKey">
+          <label for="embedding-key" class="block text-sm font-medium text-gray-700">向量 API Key</label>
+          <div class="relative mt-1">
+            <input
+              :type="showEmbeddingApiKey ? 'text' : 'password'"
+              id="embedding-key"
+              v-model="config.embedding_provider_api_key"
+              class="block w-full px-3 py-2 pr-24 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              placeholder="留空则复用主模型 API Key"
+            >
+            <button
+              type="button"
+              @click="clearEmbeddingApiKey"
+              class="absolute inset-y-0 right-2 flex items-center px-2 text-gray-400 hover:text-gray-600"
+              aria-label="清空向量 API Key"
+            >
+              <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              @click="toggleEmbeddingApiKeyVisibility"
+              class="absolute inset-y-0 right-10 flex items-center px-2 text-gray-400 hover:text-gray-600"
+              :aria-label="showEmbeddingApiKey ? '隐藏向量 API Key' : '显示向量 API Key'"
+            >
+              <svg v-if="showEmbeddingApiKey" class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M10 5c-4.478 0-8.268 2.943-9.542 7C1.732 16.057 5.522 19 10 19s8.268-2.943 9.542-7C18.268 7.943 14.478 5 10 5zm0 10a5 5 0 110-10 5 5 0 010 10z" fill-opacity="0.2" />
+                <path d="M10 7a3 3 0 100 6 3 3 0 000-6z" />
+              </svg>
+              <svg v-else class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zm13.707 0a4.167 4.167 0 11-8.334 0 4.167 4.167 0 018.334 0z" clip-rule="evenodd" />
+                <path d="M10 8a2 2 0 100 4 2 2 0 000-4z" />
               </svg>
             </button>
           </div>
@@ -234,7 +282,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, type Ref } from 'vue';
 import { getLLMConfig, createOrUpdateLLMConfig, deleteLLMConfig, getAvailableModels, type LLMConfigCreate } from '@/api/llm';
 
 interface LLMSettingsForm {
@@ -242,6 +290,7 @@ interface LLMSettingsForm {
   llm_provider_api_key: string;
   llm_provider_model: string;
   embedding_provider_url: string;
+  embedding_provider_api_key: string;
   embedding_provider_model: string;
 }
 
@@ -250,13 +299,16 @@ const createEmptyConfig = (): LLMSettingsForm => ({
   llm_provider_api_key: '',
   llm_provider_model: '',
   embedding_provider_url: '',
+  embedding_provider_api_key: '',
   embedding_provider_model: '',
 });
 
 const config = ref<LLMSettingsForm>(createEmptyConfig());
 const useMainUrlForEmbedding = ref(true);
+const useDedicatedEmbeddingApiKey = ref(false);
 
 const showApiKey = ref(false);
+const showEmbeddingApiKey = ref(false);
 const availableModels = ref<string[]>([]);
 const isLoadingModels = ref(false);
 const showModelDropdown = ref(false);
@@ -269,6 +321,21 @@ const showEmbeddingModelDropdown = ref(false);
 const lastEmbeddingLoadError = ref('');
 const lastEmbeddingLoadInfo = ref('');
 const hasTriedAutoLoadEmbeddingModels = ref(false);
+
+const normalizeLikelyOllamaUrl = (rawUrl: string): string => {
+  const trimmed = rawUrl.trim().replace(/\/+$/, '');
+  if (!trimmed) {
+    return '';
+  }
+
+  const lower = trimmed.toLowerCase();
+  const isLikelyOllama = lower.includes(':11434') || lower.includes('ollama');
+  if (!isLikelyOllama) {
+    return trimmed;
+  }
+
+  return trimmed.replace(/\/v1(?:\/(?:models|embeddings))?$/i, '');
+};
 
 // 根据输入过滤模型列表
 const filteredModels = computed(() => {
@@ -299,21 +366,30 @@ onMounted(async () => {
       llm_provider_api_key: existingConfig.llm_provider_api_key || '',
       llm_provider_model: existingConfig.llm_provider_model || '',
       embedding_provider_url: existingConfig.embedding_provider_url || '',
+      embedding_provider_api_key: existingConfig.embedding_provider_api_key || '',
       embedding_provider_model: existingConfig.embedding_provider_model || '',
     };
     useMainUrlForEmbedding.value = !existingConfig.embedding_provider_url;
+    useDedicatedEmbeddingApiKey.value = !!existingConfig.embedding_provider_api_key;
   }
 });
 
-const buildPayload = (): LLMConfigCreate => ({
-  llm_provider_url: config.value.llm_provider_url.trim() || null,
-  llm_provider_api_key: config.value.llm_provider_api_key.trim() || null,
-  llm_provider_model: config.value.llm_provider_model.trim() || null,
-  embedding_provider_url: useMainUrlForEmbedding.value
-    ? null
-    : (config.value.embedding_provider_url.trim() || null),
-  embedding_provider_model: config.value.embedding_provider_model.trim() || null,
-});
+const buildPayload = (): LLMConfigCreate => {
+  const normalizedEmbeddingUrl = normalizeLikelyOllamaUrl(config.value.embedding_provider_url);
+
+  return {
+    llm_provider_url: config.value.llm_provider_url.trim() || null,
+    llm_provider_api_key: config.value.llm_provider_api_key.trim() || null,
+    llm_provider_model: config.value.llm_provider_model.trim() || null,
+    embedding_provider_url: useMainUrlForEmbedding.value
+      ? null
+      : (normalizedEmbeddingUrl || null),
+    embedding_provider_api_key: useDedicatedEmbeddingApiKey.value
+      ? (config.value.embedding_provider_api_key.trim() || null)
+      : null,
+    embedding_provider_model: config.value.embedding_provider_model.trim() || null,
+  };
+};
 
 const handleSave = async () => {
   await createOrUpdateLLMConfig(buildPayload());
@@ -325,6 +401,7 @@ const handleDelete = async () => {
     await deleteLLMConfig();
     config.value = createEmptyConfig();
     useMainUrlForEmbedding.value = true;
+    useDedicatedEmbeddingApiKey.value = false;
     availableModels.value = [];
     availableEmbeddingModels.value = [];
     alert('配置已删除！');
@@ -335,8 +412,16 @@ const toggleApiKeyVisibility = () => {
   showApiKey.value = !showApiKey.value;
 };
 
+const toggleEmbeddingApiKeyVisibility = () => {
+  showEmbeddingApiKey.value = !showEmbeddingApiKey.value;
+};
+
 const clearApiKey = () => {
   config.value.llm_provider_api_key = '';
+};
+
+const clearEmbeddingApiKey = () => {
+  config.value.embedding_provider_api_key = '';
 };
 
 const clearApiUrl = () => {
@@ -361,82 +446,21 @@ const getEffectiveEmbeddingUrl = (): string => (
     : config.value.embedding_provider_url.trim()
 );
 
-const normalizeModelsEndpoint = (rawUrl: string): string => {
-  const trimmed = rawUrl.trim().replace(/\/+$/, '');
-  if (!trimmed) {
-    return '';
-  }
-  if (trimmed.endsWith('/v1/models')) {
-    return trimmed;
-  }
-  if (trimmed.endsWith('/v1')) {
-    return `${trimmed}/models`;
-  }
-  if (trimmed.endsWith('/models')) {
-    const withoutModels = trimmed.slice(0, -'/models'.length).replace(/\/+$/, '');
-    return `${withoutModels}/v1/models`;
-  }
-  return `${trimmed}/v1/models`;
-};
-
-const extractApiErrorMessage = (payload: unknown): string => {
-  if (!payload || typeof payload !== 'object') {
-    return '';
-  }
-  const error = (payload as { error?: unknown }).error;
-  if (!error || typeof error !== 'object') {
-    return '';
-  }
-  const message = (error as { message?: unknown }).message;
-  return typeof message === 'string' ? message : '';
-};
-
-const shouldAttemptBrowserDirectFetch = (): boolean => {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-  const origin = window.location.origin.toLowerCase();
-  return origin.includes('localhost') || origin.includes('127.0.0.1');
-};
-
-const fetchOpenAIModels = async (apiKey: string, apiUrl: string): Promise<string[]> => {
-  const endpoint = normalizeModelsEndpoint(apiUrl);
-  if (!endpoint) {
-    throw new Error('请先填写 API URL');
-  }
-
-  const response = await fetch(endpoint, {
-    method: 'GET',
-    cache: 'no-store',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-  });
-
-  const payload: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    const apiErrorMessage = extractApiErrorMessage(payload);
-    throw new Error(apiErrorMessage || `请求失败 (HTTP ${response.status})`);
-  }
-
-  const data = (payload as { data?: unknown[] } | null)?.data;
-  if (!Array.isArray(data)) {
-    return [];
-  }
-
-  const modelIds = data
-    .map((item) => (item && typeof item === 'object' ? (item as { id?: unknown }).id : undefined))
-    .filter((id): id is string => typeof id === 'string' && id.length > 0);
-
-  return modelIds.sort((a, b) => a.localeCompare(b));
-};
+const getEffectiveEmbeddingApiKey = (): string => (
+  useDedicatedEmbeddingApiKey.value
+    ? config.value.embedding_provider_api_key.trim()
+    : config.value.llm_provider_api_key.trim()
+);
 
 const fetchModelsViaBackend = async (apiKey: string, apiUrl: string): Promise<string[]> => {
-  const models = await getAvailableModels({
-    llm_provider_api_key: apiKey,
+  const requestPayload: { llm_provider_url: string; llm_provider_api_key?: string } = {
     llm_provider_url: apiUrl,
-  });
+  };
+  if (apiKey) {
+    requestPayload.llm_provider_api_key = apiKey;
+  }
+
+  const models = await getAvailableModels(requestPayload);
 
   if (!Array.isArray(models)) {
     return [];
@@ -447,85 +471,85 @@ const fetchModelsViaBackend = async (apiKey: string, apiUrl: string): Promise<st
     .sort((a, b) => a.localeCompare(b));
 };
 
-interface ModelFetchResult {
-  models: string[];
-  source: 'backend' | 'browser' | 'none';
+interface ModelListLoadContext {
+  apiKey: string;
+  apiUrl: string;
+  silent: boolean;
+  isLoading: Ref<boolean>;
+  lastError: Ref<string>;
+  lastInfo: Ref<string>;
+  availableModelList: Ref<string[]>;
+  showDropdown: Ref<boolean>;
+  missingUrlMessage: string;
+  emptyListMessage: string;
+  successInfoMessage: string;
+  errorLabel: string;
 }
 
-const fetchModelsWithFallback = async (apiKey: string, apiUrl: string): Promise<ModelFetchResult> => {
-  const backendModels = await fetchModelsViaBackend(apiKey, apiUrl);
-  if (backendModels.length > 0) {
-    return { models: backendModels, source: 'backend' };
+const loadModelList = async ({
+  apiKey,
+  apiUrl,
+  silent,
+  isLoading,
+  lastError,
+  lastInfo,
+  availableModelList,
+  showDropdown,
+  missingUrlMessage,
+  emptyListMessage,
+  successInfoMessage,
+  errorLabel,
+}: ModelListLoadContext): Promise<void> => {
+  if (isLoading.value) {
+    return;
   }
 
-  // 非本机开发来源通常会被跨域策略拦截，默认不再尝试浏览器直连。
-  if (!shouldAttemptBrowserDirectFetch()) {
-    return { models: [], source: 'none' };
-  }
-
-  try {
-    const browserModels = await fetchOpenAIModels(apiKey, apiUrl);
-    if (browserModels.length > 0) {
-      return { models: browserModels, source: 'browser' };
+  if (!apiUrl) {
+    if (!silent) {
+      alert(missingUrlMessage);
     }
-    return { models: [], source: 'none' };
-  } catch {
-    return { models: [], source: 'none' };
+    return;
+  }
+
+  isLoading.value = true;
+  lastError.value = '';
+  lastInfo.value = '';
+  try {
+    const models = await fetchModelsViaBackend(apiKey, apiUrl);
+    availableModelList.value = models;
+    if (models.length > 0) {
+      lastInfo.value = successInfoMessage;
+      showDropdown.value = true;
+    } else if (!silent) {
+      alert(emptyListMessage);
+    }
+  } catch (error) {
+    console.error(`Failed to load ${errorLabel}:`, error);
+    const errorMessage = error instanceof Error ? error.message : '未知错误';
+    lastError.value = `${errorLabel}失败：${errorMessage}`;
+    if (!silent) {
+      alert(`${errorLabel}失败：${errorMessage}`);
+    }
+  } finally {
+    isLoading.value = false;
   }
 };
 
 const loadModels = async (options?: { silent?: boolean }) => {
-  const silent = options?.silent ?? false;
-  if (isLoadingModels.value) {
-    return;
-  }
-
-  const apiKey = config.value.llm_provider_api_key?.trim() || '';
-  const apiUrl = config.value.llm_provider_url?.trim() || '';
-
-  // 验证表单
-  if (!apiKey) {
-    if (!silent) {
-      alert('请先填写 API Key');
-    }
-    return;
-  }
-  if (!apiUrl) {
-    if (!silent) {
-      alert('请先填写 API URL');
-    }
-    return;
-  }
-
-  isLoadingModels.value = true;
-  lastLoadError.value = '';
-  lastLoadInfo.value = '';
-  try {
-    const result = await fetchModelsWithFallback(apiKey, apiUrl);
-    const models = result.models;
-    availableModels.value = models;
-    if (models.length > 0) {
-      if (result.source === 'backend') {
-        lastLoadInfo.value = '已通过后端代理获取模型列表（已绕过浏览器跨域限制）。';
-      } else if (result.source === 'browser') {
-        lastLoadInfo.value = '已通过浏览器直连获取模型列表。';
-      }
-      showModelDropdown.value = true;
-    } else {
-      if (!silent) {
-        alert('未获取到模型列表，请检查 API URL 和 API Key 是否正确');
-      }
-    }
-  } catch (error) {
-    console.error('Failed to load models:', error);
-    const errorMessage = error instanceof Error ? error.message : '未知错误';
-    lastLoadError.value = `获取模型列表失败：${errorMessage}`;
-    if (!silent) {
-      alert(`获取模型列表失败：${errorMessage}`);
-    }
-  } finally {
-    isLoadingModels.value = false;
-  }
+  await loadModelList({
+    apiKey: config.value.llm_provider_api_key?.trim() || '',
+    apiUrl: config.value.llm_provider_url?.trim() || '',
+    silent: options?.silent ?? false,
+    isLoading: isLoadingModels,
+    lastError: lastLoadError,
+    lastInfo: lastLoadInfo,
+    availableModelList: availableModels,
+    showDropdown: showModelDropdown,
+    missingUrlMessage: '请先填写 API URL',
+    emptyListMessage: '未获取到模型列表，请检查 API URL 与认证配置（如需要）是否正确',
+    successInfoMessage: '已通过后端代理获取模型列表',
+    errorLabel: '获取模型列表',
+  });
 };
 
 const manualTryLoadModels = async () => {
@@ -533,56 +557,20 @@ const manualTryLoadModels = async () => {
 };
 
 const loadEmbeddingModels = async (options?: { silent?: boolean }) => {
-  const silent = options?.silent ?? false;
-  if (isLoadingEmbeddingModels.value) {
-    return;
-  }
-
-  const apiKey = config.value.llm_provider_api_key.trim();
-  const apiUrl = getEffectiveEmbeddingUrl();
-
-  if (!apiKey) {
-    if (!silent) {
-      alert('请先填写 API Key');
-    }
-    return;
-  }
-  if (!apiUrl) {
-    if (!silent) {
-      alert(useMainUrlForEmbedding.value ? '请先填写主模型 API URL' : '请先填写向量 API URL');
-    }
-    return;
-  }
-
-  isLoadingEmbeddingModels.value = true;
-  lastEmbeddingLoadError.value = '';
-  lastEmbeddingLoadInfo.value = '';
-  try {
-    const result = await fetchModelsWithFallback(apiKey, apiUrl);
-    const models = result.models;
-    availableEmbeddingModels.value = models;
-    if (models.length > 0) {
-      if (result.source === 'backend') {
-        lastEmbeddingLoadInfo.value = '已通过后端代理获取向量模型列表（已绕过浏览器跨域限制）。';
-      } else if (result.source === 'browser') {
-        lastEmbeddingLoadInfo.value = '已通过浏览器直连获取向量模型列表。';
-      }
-      showEmbeddingModelDropdown.value = true;
-    } else {
-      if (!silent) {
-        alert('未获取到向量模型列表，请检查 API URL 和 API Key 是否正确');
-      }
-    }
-  } catch (error) {
-    console.error('Failed to load embedding models:', error);
-    const errorMessage = error instanceof Error ? error.message : '未知错误';
-    lastEmbeddingLoadError.value = `获取向量模型列表失败：${errorMessage}`;
-    if (!silent) {
-      alert(`获取向量模型列表失败：${errorMessage}`);
-    }
-  } finally {
-    isLoadingEmbeddingModels.value = false;
-  }
+  await loadModelList({
+    apiKey: getEffectiveEmbeddingApiKey(),
+    apiUrl: getEffectiveEmbeddingUrl(),
+    silent: options?.silent ?? false,
+    isLoading: isLoadingEmbeddingModels,
+    lastError: lastEmbeddingLoadError,
+    lastInfo: lastEmbeddingLoadInfo,
+    availableModelList: availableEmbeddingModels,
+    showDropdown: showEmbeddingModelDropdown,
+    missingUrlMessage: useMainUrlForEmbedding.value ? '请先填写主模型 API URL' : '请先填写向量 API URL',
+    emptyListMessage: '未获取到向量模型列表，请检查 API URL 与认证配置（如需要）是否正确',
+    successInfoMessage: '已通过后端代理获取向量模型列表',
+    errorLabel: '获取向量模型列表',
+  });
 };
 
 const retryLoadModels = async () => {
@@ -597,32 +585,60 @@ const retryLoadEmbeddingModels = async () => {
   await loadEmbeddingModels();
 };
 
-const handleModelFocus = async () => {
-  showModelDropdown.value = true;
+interface AutoLoadOnFocusContext {
+  showDropdown: Ref<boolean>;
+  availableModelList: Ref<string[]>;
+  isLoading: Ref<boolean>;
+  lastError: Ref<string>;
+  hasTriedAutoLoad: Ref<boolean>;
+  canAutoLoad: () => boolean;
+  loadSilently: () => Promise<void>;
+}
+
+const autoLoadOnFocus = async ({
+  showDropdown,
+  availableModelList,
+  isLoading,
+  lastError,
+  hasTriedAutoLoad,
+  canAutoLoad,
+  loadSilently,
+}: AutoLoadOnFocusContext): Promise<void> => {
+  showDropdown.value = true;
   if (
-    availableModels.value.length === 0
-    && config.value.llm_provider_api_key
-    && !isLoadingModels.value
-    && !lastLoadError.value
-    && !hasTriedAutoLoadModels.value
+    availableModelList.value.length === 0
+    && canAutoLoad()
+    && !isLoading.value
+    && !lastError.value
+    && !hasTriedAutoLoad.value
   ) {
-    hasTriedAutoLoadModels.value = true;
-    await loadModels({ silent: true });
+    hasTriedAutoLoad.value = true;
+    await loadSilently();
   }
 };
 
+const handleModelFocus = async () => {
+  await autoLoadOnFocus({
+    showDropdown: showModelDropdown,
+    availableModelList: availableModels,
+    isLoading: isLoadingModels,
+    lastError: lastLoadError,
+    hasTriedAutoLoad: hasTriedAutoLoadModels,
+    canAutoLoad: () => Boolean(config.value.llm_provider_url),
+    loadSilently: () => loadModels({ silent: true }),
+  });
+};
+
 const handleEmbeddingModelFocus = async () => {
-  showEmbeddingModelDropdown.value = true;
-  if (
-    availableEmbeddingModels.value.length === 0
-    && config.value.llm_provider_api_key
-    && !isLoadingEmbeddingModels.value
-    && !lastEmbeddingLoadError.value
-    && !hasTriedAutoLoadEmbeddingModels.value
-  ) {
-    hasTriedAutoLoadEmbeddingModels.value = true;
-    await loadEmbeddingModels({ silent: true });
-  }
+  await autoLoadOnFocus({
+    showDropdown: showEmbeddingModelDropdown,
+    availableModelList: availableEmbeddingModels,
+    isLoading: isLoadingEmbeddingModels,
+    lastError: lastEmbeddingLoadError,
+    hasTriedAutoLoad: hasTriedAutoLoadEmbeddingModels,
+    canAutoLoad: () => Boolean(getEffectiveEmbeddingUrl()),
+    loadSilently: () => loadEmbeddingModels({ silent: true }),
+  });
 };
 
 const selectModel = (model: string) => {
@@ -635,16 +651,18 @@ const selectEmbeddingModel = (model: string) => {
   showEmbeddingModelDropdown.value = false;
 };
 
-const hideDropdown = () => {
+const hideDropdownWithDelay = (dropdownState: Ref<boolean>): void => {
   // 延迟隐藏，确保点击事件能触发
   setTimeout(() => {
-    showModelDropdown.value = false;
+    dropdownState.value = false;
   }, 200);
 };
 
+const hideDropdown = () => {
+  hideDropdownWithDelay(showModelDropdown);
+};
+
 const hideEmbeddingDropdown = () => {
-  setTimeout(() => {
-    showEmbeddingModelDropdown.value = false;
-  }, 200);
+  hideDropdownWithDelay(showEmbeddingModelDropdown);
 };
 </script>

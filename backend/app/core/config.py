@@ -77,11 +77,11 @@ class Settings(BaseSettings):
     )
     openai_model_name: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL_NAME", description="默认 LLM 模型名称")
     writer_chapter_versions: int = Field(
-        default=2,
+        default=1,
         ge=1,
         env="WRITER_CHAPTER_VERSION_COUNT",
         validation_alias=AliasChoices("WRITER_CHAPTER_VERSION_COUNT", "WRITER_CHAPTER_VERSIONS"),
-        description="每次生成章节的候选版本数量",
+        description="每次生成章节的候选版本数量（支持 1~2）",
     )
     embedding_provider: str = Field(
         default="ollama",

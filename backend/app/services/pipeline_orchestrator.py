@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,12 +35,23 @@ from ..services.writer_context_builder import WriterContextBuilder
 from ..utils.json_utils import remove_think_tags, unwrap_markdown_json
 
 logger = logging.getLogger(__name__)
+# 使用固定 UTC+8，避免在 Windows/Python 环境缺少 tzdata 时 ZoneInfo 初始化失败。
+CN_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
+MIN_CHAPTER_VERSION_COUNT = 1
+MAX_CHAPTER_VERSION_COUNT = 2
+
+
+def _clamp_version_count(value: int) -> int:
+    return max(MIN_CHAPTER_VERSION_COUNT, min(MAX_CHAPTER_VERSION_COUNT, int(value)))
+DEFAULT_CHAPTER_TARGET_WORD_COUNT = 3000
+MIN_CHAPTER_WORD_COUNT = 2200
+WRITER_GENERATION_MAX_TOKENS = 7000
 
 
 @dataclass
 class PipelineConfig:
     preset: str = "basic"
-    version_count: int = 2
+    version_count: int = 1
     enable_preview: bool = False
     enable_optimizer: bool = False
     enable_consistency: bool = False
@@ -88,6 +100,11 @@ class PipelineOrchestrator:
         chapter.real_summary = None
         chapter.selected_version_id = None
         chapter.status = "generating"
+        chapter.generation_started_at = datetime.now(CN_TIMEZONE)
+        chapter.generation_progress = 3
+        chapter.generation_step = "context_prep"
+        chapter.generation_step_index = 1
+        chapter.generation_step_total = 7
         await self.session.commit()
 
         outlines_map = {item.chapter_number: item for item in project.outlines}
@@ -119,6 +136,10 @@ class PipelineOrchestrator:
             all_characters=all_characters,
             user_id=user_id,
         )
+        chapter.generation_progress = 28
+        chapter.generation_step = "director_mission"
+        chapter.generation_step_index = 2
+        await self.session.commit()
 
         allowed_new_characters = chapter_mission.get("allowed_new_characters", []) if chapter_mission else []
 
@@ -217,6 +238,10 @@ class PipelineOrchestrator:
 
         prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
         logger.debug("Pipeline prompt length: %s chars", len(prompt_input))
+        chapter.generation_progress = 55
+        chapter.generation_step = "draft_generation"
+        chapter.generation_step_index = 4
+        await self.session.commit()
 
         version_count = config.version_count
         version_style_hints = self._resolve_style_hints(enhanced_context, version_count)
@@ -224,6 +249,10 @@ class PipelineOrchestrator:
         versions: List[Dict[str, Any]] = []
         for idx in range(version_count):
             style_hint = version_style_hints[idx] if idx < len(version_style_hints) else None
+            chapter.generation_progress = 55 + int((idx / max(version_count, 1)) * 25)
+            chapter.generation_step = "draft_generation"
+            chapter.generation_step_index = 4
+            await self.session.commit()
             versions.append(
                 await self._generate_single_version(
                     index=idx,
@@ -244,7 +273,15 @@ class PipelineOrchestrator:
                     config=config,
                 )
             )
+            chapter.generation_progress = 55 + int(((idx + 1) / max(version_count, 1)) * 25)
+            chapter.generation_step = "draft_generation"
+            chapter.generation_step_index = 4
+            await self.session.commit()
 
+        chapter.generation_progress = 86
+        chapter.generation_step = "quality_review"
+        chapter.generation_step_index = 5
+        await self.session.commit()
         best_version_index, ai_review_result = await self._run_ai_review(
             versions=versions,
             chapter_mission=chapter_mission,
@@ -320,6 +357,10 @@ class PipelineOrchestrator:
 
         contents = [v.get("content", "") for v in versions]
         metadata = [v.get("metadata") for v in versions]
+        chapter.generation_progress = 96
+        chapter.generation_step = "persist_versions"
+        chapter.generation_step_index = 6
+        await self.session.commit()
         versions_models = await self.novel_service.replace_chapter_versions(chapter, contents, metadata)
 
         variants = []
@@ -398,7 +439,7 @@ class PipelineOrchestrator:
         if requested_count:
             try:
                 count = int(requested_count)
-                return max(1, count)
+                return _clamp_version_count(count)
             except (TypeError, ValueError):
                 pass
 
@@ -409,7 +450,7 @@ class PipelineOrchestrator:
                 try:
                     val = int(record.value)
                     if val >= 1:
-                        return val
+                        return _clamp_version_count(val)
                 except ValueError:
                     pass
 
@@ -419,11 +460,11 @@ class PipelineOrchestrator:
                 try:
                     val = int(v)
                     if val >= 1:
-                        return val
+                        return _clamp_version_count(val)
                 except ValueError:
                     pass
 
-        return int(settings.writer_chapter_versions)
+        return _clamp_version_count(int(settings.writer_chapter_versions))
 
     async def _collect_history_context(
         self,
@@ -696,6 +737,14 @@ class PipelineOrchestrator:
         sections.extend(
             [
                 ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
+                (
+                    "[篇幅与排版要求]",
+                    (
+                        f"目标字数：约 {DEFAULT_CHAPTER_TARGET_WORD_COUNT} 字，"
+                        f"不得少于 {MIN_CHAPTER_WORD_COUNT} 字。"
+                        "段落清晰，尽量保持自然段首行空两格。"
+                    ),
+                ),
                 ("[禁止角色](本章不允许提及)", forbidden_text),
             ]
         )
@@ -776,6 +825,7 @@ class PipelineOrchestrator:
                 user_id=user_id,
                 timeout=600.0,
                 response_format=None,
+                max_tokens=WRITER_GENERATION_MAX_TOKENS,
             )
             cleaned = remove_think_tags(response)
             content = unwrap_markdown_json(cleaned)
@@ -890,6 +940,7 @@ class PipelineOrchestrator:
                 user_id=user_id,
                 timeout=300.0,
                 response_format=None,
+                max_tokens=WRITER_GENERATION_MAX_TOKENS,
             )
             cleaned = remove_think_tags(response)
             return cleaned

@@ -81,7 +81,11 @@ router.beforeEach(async (to, from, next) => {
   
   // Attempt to fetch user info if token exists but user info is not loaded
   if (authStore.token && !authStore.user) {
-    await authStore.fetchUser()
+    try {
+      await authStore.fetchUser()
+    } catch (error) {
+      console.error('恢复登录状态失败', error)
+    }
   }
 
   const requiresAuth = to.matched.some(record => record.meta.requiresAuth)

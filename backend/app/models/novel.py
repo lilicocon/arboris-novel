@@ -160,6 +160,11 @@ class Chapter(Base):
     chapter_number: Mapped[int] = mapped_column(Integer, nullable=False)
     real_summary: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="not_generated")
+    generation_progress: Mapped[int] = mapped_column(Integer, default=0)
+    generation_step: Mapped[Optional[str]] = mapped_column(String(64))
+    generation_step_index: Mapped[int] = mapped_column(Integer, default=0)
+    generation_step_total: Mapped[int] = mapped_column(Integer, default=0)
+    generation_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     selected_version_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("chapter_versions.id", ondelete="SET NULL"), nullable=True

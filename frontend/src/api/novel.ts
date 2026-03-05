@@ -3,8 +3,10 @@ import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
 
 // API 配置
-// 在生产环境中使用相对路径，在开发环境中使用绝对路径
-export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http://127.0.0.1:8000'
+// 默认同源请求（开发环境由 Vite 代理 /api 到后端），
+// 需要直连后端时可通过 VITE_API_BASE_URL 覆盖。
+const configuredApiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim()
+export const API_BASE_URL = configuredApiBase
 export const API_PREFIX = '/api'
 
 // 统一的请求处理函数
@@ -103,6 +105,12 @@ export interface Chapter {
   versions: string[] | null  // versions是字符串数组，不是对象数组
   evaluation: string | null
   generation_status: 'not_generated' | 'generating' | 'evaluating' | 'selecting' | 'failed' | 'evaluation_failed' | 'waiting_for_confirm' | 'successful'
+  generation_progress?: number | null
+  generation_step?: string | null
+  generation_step_index?: number | null
+  generation_step_total?: number | null
+  generation_started_at?: string | null
+  status_updated_at?: string | null
   word_count?: number  // 字数统计
 }
 

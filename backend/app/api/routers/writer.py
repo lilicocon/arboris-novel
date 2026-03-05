@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -60,6 +61,17 @@ from ...services.pipeline_orchestrator import PipelineOrchestrator
 
 router = APIRouter(prefix="/api/writer", tags=["Writer"])
 logger = logging.getLogger(__name__)
+# 使用固定 UTC+8，避免在 Windows/Python 环境缺少 tzdata 时 ZoneInfo 初始化失败。
+CN_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
+DEFAULT_CHAPTER_TARGET_WORD_COUNT = 3000
+MIN_CHAPTER_WORD_COUNT = 2200
+WRITER_GENERATION_MAX_TOKENS = 7000
+MIN_CHAPTER_VERSION_COUNT = 1
+MAX_CHAPTER_VERSION_COUNT = 2
+
+
+def _clamp_version_count(value: int) -> int:
+    return max(MIN_CHAPTER_VERSION_COUNT, min(MAX_CHAPTER_VERSION_COUNT, int(value)))
 
 
 async def _load_project_schema(service: NovelService, project_id: str, user_id: int) -> NovelProjectSchema:
@@ -83,7 +95,7 @@ async def _resolve_version_count(session: AsyncSession) -> int:
     2) SystemConfig: writer.version_count（兼容旧键）
     3) ENV: WRITER_CHAPTER_VERSION_COUNT / WRITER_CHAPTER_VERSIONS（与 config.py 对齐）
     4) ENV: WRITER_VERSION_COUNT（兼容旧）
-    5) settings.writer_chapter_versions（默认=2）
+    5) settings.writer_chapter_versions（默认=1）
     """
     repo = SystemConfigRepository(session)
     # 1) 新键优先，兼容旧键
@@ -93,7 +105,7 @@ async def _resolve_version_count(session: AsyncSession) -> int:
             try:
                 val = int(record.value)
                 if val >= 1:
-                    return val
+                    return _clamp_version_count(val)
             except ValueError:
                 pass
     # 2) 环境变量（与 Settings 对齐）
@@ -103,11 +115,11 @@ async def _resolve_version_count(session: AsyncSession) -> int:
             try:
                 val = int(v)
                 if val >= 1:
-                    return val
+                    return _clamp_version_count(val)
             except ValueError:
                 pass
     # 3) 默认值
-    return int(settings.writer_chapter_versions)
+    return _clamp_version_count(int(settings.writer_chapter_versions))
 
 
 async def _generate_chapter_mission(
@@ -186,6 +198,34 @@ async def _rewrite_with_guardrails(
         logger.warning("未配置 rewrite_guardrails 提示词，跳过自动修复")
         return original_text
 
+    rewrite_input = f"""
+[原文]
+{original_text}
+
+[章节导演脚本]
+{json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无"}
+
+[违规列表]
+{violations_text}
+"""
+
+    try:
+        response = await llm_service.get_llm_response(
+            system_prompt=rewrite_prompt,
+            conversation_history=[{"role": "user", "content": rewrite_input}],
+            temperature=0.3,
+            user_id=user_id,
+            timeout=300.0,
+            response_format=None,
+            max_tokens=WRITER_GENERATION_MAX_TOKENS,
+        )
+        cleaned = remove_think_tags(response)
+        logger.info("成功修复违规内容")
+        return cleaned
+    except Exception as exc:
+        logger.warning("自动修复失败，返回原文: %s", exc)
+        return original_text
+
 
 async def _refresh_edit_summary_and_ingest(
     project_id: str,
@@ -245,33 +285,6 @@ async def _refresh_edit_summary_and_ingest(
         except Exception as exc:
             logger.error("章节 %s 向量化入库失败: %s", chapter_number, exc)
 
-    rewrite_input = f"""
-[原文]
-{original_text}
-
-[章节导演脚本]
-{json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无"}
-
-[违规列表]
-{violations_text}
-"""
-
-    try:
-        response = await llm_service.get_llm_response(
-            system_prompt=rewrite_prompt,
-            conversation_history=[{"role": "user", "content": rewrite_input}],
-            temperature=0.3,
-            user_id=user_id,
-            timeout=300.0,
-            response_format=None,
-        )
-        cleaned = remove_think_tags(response)
-        logger.info("成功修复违规内容")
-        return cleaned
-    except Exception as exc:
-        logger.warning("自动修复失败，返回原文: %s", exc)
-        return original_text
-
 
 async def _finalize_chapter_async(
     project_id: str,
@@ -305,6 +318,10 @@ async def _finalize_chapter_async(
 
         chapter.selected_version_id = selected_version.id
         chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
+        chapter.generation_progress = 100
+        chapter.generation_step = "completed"
+        chapter.generation_step_index = 7
+        chapter.generation_step_total = 7
         chapter.word_count = len(selected_version.content or "")
         await session.commit()
 
@@ -416,6 +433,10 @@ async def finalize_chapter(
 
     chapter.selected_version_id = selected_version.id
     chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
+    chapter.generation_progress = 100
+    chapter.generation_step = "completed"
+    chapter.generation_step_index = 7
+    chapter.generation_step_total = 7
     chapter.word_count = len(selected_version.content or "")
     await session.commit()
 
@@ -473,9 +494,31 @@ async def generate_chapter(
         raise HTTPException(status_code=404, detail="蓝图中未找到对应章节纲要")
 
     chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number)
+    generation_step_total = 7
+
+    async def _update_generation_progress(
+        *,
+        progress: int,
+        step: str,
+        step_index: int,
+        status: Optional[str] = None,
+    ) -> None:
+        chapter.generation_progress = max(0, min(100, int(progress)))
+        chapter.generation_step = step
+        chapter.generation_step_index = max(0, step_index)
+        chapter.generation_step_total = generation_step_total
+        if status:
+            chapter.status = status
+        await session.commit()
+
     chapter.real_summary = None
     chapter.selected_version_id = None
     chapter.status = "generating"
+    chapter.generation_started_at = datetime.now(CN_TIMEZONE)
+    chapter.generation_progress = 3
+    chapter.generation_step = "context_prep"
+    chapter.generation_step_index = 1
+    chapter.generation_step_total = generation_step_total
     await session.commit()
 
     outlines_map = {item.chapter_number: item for item in project.outlines}
@@ -512,6 +555,8 @@ async def generate_chapter(
             previous_summary_text = existing.real_summary or ""
             previous_tail_excerpt = _extract_tail_excerpt(existing.selected_version.content)
 
+    await _update_generation_progress(progress=15, step="context_prep", step_index=1)
+
     project_schema = await novel_service._serialize_project(project)
     blueprint_dict = project_schema.blueprint.model_dump()
 
@@ -531,6 +576,7 @@ async def generate_chapter(
     all_characters = [c.get("name") for c in blueprint_dict.get("characters", []) if c.get("name")]
 
     # ========== 2. L2 Director: 生成章节导演脚本 ==========
+    await _update_generation_progress(progress=22, step="director_mission", step_index=2)
     chapter_mission = await _generate_chapter_mission(
         llm_service=llm_service,
         prompt_service=prompt_service,
@@ -575,6 +621,7 @@ async def generate_chapter(
     )
 
     # ========== 4. 准备 RAG 上下文 ==========
+    await _update_generation_progress(progress=38, step="rag_retrieval", step_index=3)
     vector_store: Optional[VectorStoreService]
     if not settings.vector_store_enabled:
         vector_store = None
@@ -595,6 +642,7 @@ async def generate_chapter(
         query_text=rag_query or outline.title or outline.summary or "",
         user_id=current_user.id,
     )
+    await _update_generation_progress(progress=48, step="rag_retrieval", step_index=3)
     rag_chunks_text = "\n\n".join(rag_context.chunk_texts()) if rag_context.chunks else "未检索到章节片段"
     rag_summaries_text = "\n".join(rag_context.summary_lines()) if rag_context.summaries else "未检索到章节摘要"
 
@@ -605,6 +653,12 @@ async def generate_chapter(
         writer_prompt = await prompt_service.get_prompt("writing")
     if not writer_prompt:
         logger.error("未配置写作提示词，无法生成章节内容")
+        chapter.status = "failed"
+        chapter.generation_progress = 0
+        chapter.generation_step = "failed"
+        chapter.generation_step_index = 0
+        chapter.generation_step_total = generation_step_total
+        await session.commit()
         raise HTTPException(status_code=500, detail="缺少写作提示词，请联系管理员配置")
 
     # 使用裁剪后的蓝图（移除了 full_synopsis 和未登场角色）
@@ -624,10 +678,19 @@ async def generate_chapter(
         ("[检索到的剧情上下文](Markdown)", rag_chunks_text),
         ("[检索到的章节摘要](Markdown)", rag_summaries_text),
         ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
+        (
+            "[篇幅与排版要求]",
+            (
+                f"目标字数：约 {DEFAULT_CHAPTER_TARGET_WORD_COUNT} 字，"
+                f"不得少于 {MIN_CHAPTER_WORD_COUNT} 字。"
+                "段落清晰，尽量保持自然段首行空两格。"
+            ),
+        ),
         ("[禁止角色](本章不允许提及)", forbidden_text),
     ]
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
     logger.debug("章节写作提示词长度: %s 字符", len(prompt_input))
+    await _update_generation_progress(progress=55, step="draft_generation", step_index=4)
 
     # ========== 6. L3 Writer: 生成正文 ==========
     async def _generate_single_version(idx: int, version_style_hint: Optional[str] = None) -> Dict:
@@ -645,6 +708,7 @@ async def generate_chapter(
                 user_id=current_user.id,
                 timeout=600.0,
                 response_format=None,
+                max_tokens=WRITER_GENERATION_MAX_TOKENS,
             )
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
@@ -683,6 +747,14 @@ async def generate_chapter(
                     violations_text=violations_text,
                     user_id=current_user.id,
                 )
+                if not final_content:
+                    logger.warning(
+                        "项目 %s 第 %s 章版本 %s 自动修复返回空内容，回退原始正文",
+                        project_id,
+                        request.chapter_number,
+                        idx + 1,
+                    )
+                    final_content = normalized
 
             def _extract_text(value: object) -> Optional[str]:
                 if not value:
@@ -782,10 +854,18 @@ async def generate_chapter(
     try:
         for idx in range(version_count):
             style_hint = version_style_hints[idx] if idx < len(version_style_hints) else None
+            before_progress = 55 + int((idx / max(version_count, 1)) * 25)
+            await _update_generation_progress(progress=before_progress, step="draft_generation", step_index=4)
             raw_versions.append(await _generate_single_version(idx, style_hint))
+            after_progress = 55 + int(((idx + 1) / max(version_count, 1)) * 25)
+            await _update_generation_progress(progress=after_progress, step="draft_generation", step_index=4)
     except Exception as exc:
         logger.exception("项目 %s 生成第 %s 章时发生异常: %s", project_id, request.chapter_number, exc)
         chapter.status = "failed"
+        chapter.generation_progress = 0
+        chapter.generation_step = "failed"
+        chapter.generation_step_index = 0
+        chapter.generation_step_total = generation_step_total
         await session.commit()
         if isinstance(exc, HTTPException):
             raise exc
@@ -793,6 +873,8 @@ async def generate_chapter(
             status_code=500,
             detail=f"生成章节失败: {str(exc)[:200]}"
         )
+
+    await _update_generation_progress(progress=82, step="draft_generation", step_index=4)
 
     contents: List[str] = []
     metadata: List[Dict] = []
@@ -811,6 +893,12 @@ async def generate_chapter(
                     version_idx,
                     list(variant.keys()),
                 )
+                chapter.status = "failed"
+                chapter.generation_progress = 0
+                chapter.generation_step = "failed"
+                chapter.generation_step_index = 0
+                chapter.generation_step_total = generation_step_total
+                await session.commit()
                 raise HTTPException(
                     status_code=502,
                     detail=f"生成章节第 {version_idx} 个版本失败：模型未返回有效正文，请重试。",
@@ -820,6 +908,12 @@ async def generate_chapter(
         else:
             text = str(variant).strip()
             if not text:
+                chapter.status = "failed"
+                chapter.generation_progress = 0
+                chapter.generation_step = "failed"
+                chapter.generation_step_index = 0
+                chapter.generation_step_total = generation_step_total
+                await session.commit()
                 raise HTTPException(
                     status_code=502,
                     detail=f"生成章节第 {version_idx} 个版本失败：模型返回空内容，请重试。",
@@ -828,6 +922,7 @@ async def generate_chapter(
             metadata.append({"raw": variant})
 
     # ========== 8. AI Review: 自动评审多版本 ==========
+    await _update_generation_progress(progress=86, step="quality_review", step_index=5)
     ai_review_result = None
     if len(contents) > 1:
         try:
@@ -856,7 +951,18 @@ async def generate_chapter(
         except Exception as exc:
             logger.warning("AI 评审失败，跳过: %s", exc)
 
-    await novel_service.replace_chapter_versions(chapter, contents, metadata)
+    await _update_generation_progress(progress=96, step="persist_versions", step_index=6)
+    try:
+        await novel_service.replace_chapter_versions(chapter, contents, metadata)
+    except Exception as exc:
+        logger.exception("项目 %s 第 %s 章写入版本失败: %s", project_id, request.chapter_number, exc)
+        chapter.status = "failed"
+        chapter.generation_progress = 0
+        chapter.generation_step = "failed"
+        chapter.generation_step_index = 0
+        chapter.generation_step_total = generation_step_total
+        await session.commit()
+        raise HTTPException(status_code=500, detail="章节版本写入失败，请重试。")
     logger.info(
         "项目 %s 第 %s 章生成完成，已写入 %s 个版本",
         project_id,
@@ -877,9 +983,25 @@ async def select_chapter_version(
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number)
 
+    chapter.status = ChapterGenerationStatus.SELECTING.value
+    chapter.generation_progress = 95
+    chapter.generation_step = "selecting_version"
+    chapter.generation_step_index = 6
+    chapter.generation_step_total = 7
+    await session.commit()
+
     # 使用 novel_service.select_chapter_version 确保排序一致
     # 该函数会按 created_at 排序并校验索引
-    selected_version = await novel_service.select_chapter_version(chapter, request.version_index)
+    try:
+        selected_version = await novel_service.select_chapter_version(chapter, request.version_index)
+    except HTTPException:
+        chapter.status = ChapterGenerationStatus.WAITING_FOR_CONFIRM.value
+        chapter.generation_progress = 100
+        chapter.generation_step = "waiting_for_confirm"
+        chapter.generation_step_index = 7
+        chapter.generation_step_total = 7
+        await session.commit()
+        raise
     
     # 校验内容是否为空
     if not selected_version.content or len(selected_version.content.strip()) == 0:
@@ -960,6 +1082,10 @@ async def evaluate_chapter(
         raise HTTPException(status_code=400, detail="版本内容为空，无法进行评审")
 
     chapter.status = "evaluating"
+    chapter.generation_progress = 84
+    chapter.generation_step = "evaluating"
+    chapter.generation_step_index = 2
+    chapter.generation_step_total = 3
     await session.commit()
 
     eval_prompt = await prompt_service.get_prompt("evaluation")
@@ -1026,6 +1152,10 @@ async def evaluate_chapter(
             )
             session.add(evaluation_record)
             chapter.status = "evaluation_failed"
+            chapter.generation_progress = 0
+            chapter.generation_step = "evaluation_failed"
+            chapter.generation_step_index = 0
+            chapter.generation_step_total = 3
             await session.commit()
         
         # 抛出异常，让前端知道评审失败
@@ -1172,6 +1302,10 @@ async def edit_chapter_content(
         chapter.selected_version_id = target_version.id
     
     chapter.status = "successful"
+    chapter.generation_progress = 100
+    chapter.generation_step = "completed"
+    chapter.generation_step_index = 7
+    chapter.generation_step_total = 7
     chapter.word_count = len(request.content or "")
     await session.commit()
 
@@ -1218,6 +1352,10 @@ async def edit_chapter_content_fast(
         chapter.selected_version_id = target_version.id
 
     chapter.status = "successful"
+    chapter.generation_progress = 100
+    chapter.generation_step = "completed"
+    chapter.generation_step_index = 7
+    chapter.generation_step_total = 7
     chapter.word_count = len(request.content or "")
     await session.commit()
 
@@ -1277,5 +1415,11 @@ async def edit_chapter_content_fast(
         versions=versions,
         evaluation=evaluation_text,
         generation_status=ChapterGenerationStatus(status_value),
+        generation_progress=chapter.generation_progress,
+        generation_step=chapter.generation_step,
+        generation_step_index=chapter.generation_step_index,
+        generation_step_total=chapter.generation_step_total,
+        generation_started_at=chapter.__dict__.get("generation_started_at"),
+        status_updated_at=chapter.__dict__.get("updated_at"),
         word_count=chapter.word_count or 0,
     )

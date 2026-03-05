@@ -12,6 +12,10 @@ class LLMConfigBase(BaseModel):
         default=None,
         description="自定义向量模型服务地址，留空则复用主模型地址",
     )
+    embedding_provider_api_key: Optional[str] = Field(
+        default=None,
+        description="自定义向量模型 API Key，留空则复用主模型 API Key",
+    )
     embedding_provider_model: Optional[str] = Field(default=None, description="自定义向量模型名称")
 
 
@@ -28,4 +32,4 @@ class LLMConfigRead(LLMConfigBase):
 
 class ModelListRequest(BaseModel):
     llm_provider_url: Optional[str] = Field(default=None, description="LLM 服务地址")
-    llm_provider_api_key: str = Field(..., description="LLM API Key")
+    llm_provider_api_key: Optional[str] = Field(default=None, description="LLM API Key，可为空")

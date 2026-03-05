@@ -129,21 +129,53 @@ onMounted(() => {
 });
 
 const handleLogin = async () => {
+  const traceId = `login-${Date.now()}`;
+  const startedAt = performance.now();
+  const warnTimer = window.setTimeout(() => {
+    console.warn(`[${traceId}] 登录流程超过 8 秒仍未完成，可能卡在网络请求或后端处理中`);
+  }, 8000);
+
+  console.log(`[${traceId}] handleLogin start`, {
+    username: username.value,
+    hasPassword: Boolean(password.value),
+  });
   error.value = '';
   isLoading.value = true;
+  console.log(`[${traceId}] isLoading -> true`);
   try {
+    console.log(`[${traceId}] calling authStore.login`);
     const mustChange = await authStore.login(username.value, password.value);
+    console.log(`[${traceId}] authStore.login resolved`, {
+      mustChange,
+      hasToken: Boolean(authStore.token),
+      user: authStore.user,
+    });
     const user = authStore.user;
     if (user?.is_admin && (authStore.mustChangePassword || mustChange)) {
-      router.push({ name: 'admin', query: { tab: 'password' } });
+      console.log(`[${traceId}] navigating to admin password tab`);
+      await router.push({ name: 'admin', query: { tab: 'password' } });
+      console.log(`[${traceId}] router.push admin done`);
     } else {
-      router.push('/');
+      console.log(`[${traceId}] navigating to /`);
+      await router.push('/');
+      console.log(`[${traceId}] router.push / done`);
     }
   } catch (err) {
-    error.value = '登录失败，请检查您的用户名和密码。';
-    console.error(err);
+    console.error(`[${traceId}] handleLogin error`, err);
+    if (err instanceof Error && err.message.includes('Request timed out')) {
+      error.value = '登录请求超时，请确认后端服务已启动并可访问。';
+    } else if (err instanceof Error && err.message === 'Failed to initialize user session') {
+      error.value = '登录成功，但获取用户信息失败，请检查后端并重试。';
+    } else {
+      error.value = '登录失败，请检查您的用户名和密码。';
+    }
+    console.log(`[${traceId}] error message shown`, { errorText: error.value });
   } finally {
+    window.clearTimeout(warnTimer);
     isLoading.value = false;
+    console.log(`[${traceId}] isLoading -> false`, {
+      durationMs: Math.round(performance.now() - startedAt),
+    });
   }
 };
 </script>

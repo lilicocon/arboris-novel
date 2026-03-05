@@ -2,6 +2,7 @@
 import logging
 import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException, status
@@ -222,9 +223,17 @@ class LLMService:
         return full_response
 
     async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Optional[str]]:
+        return await self._resolve_llm_config_with_policy(user_id, require_api_key=True)
+
+    async def _resolve_llm_config_with_policy(
+        self,
+        user_id: Optional[int],
+        *,
+        require_api_key: bool,
+    ) -> Dict[str, Optional[str]]:
         if user_id:
             config = await self.llm_repo.get_by_user(user_id)
-            if config and config.llm_provider_api_key:
+            if config and (config.llm_provider_api_key or not require_api_key):
                 return {
                     "api_key": config.llm_provider_api_key,
                     "base_url": config.llm_provider_url,
@@ -239,7 +248,7 @@ class LLMService:
         base_url = await self._get_config_value("llm.base_url")
         model = await self._get_config_value("llm.model")
 
-        if not api_key:
+        if require_api_key and not api_key:
             logger.error("未配置默认 LLM API Key，且用户 %s 未设置自定义 API Key", user_id)
             raise HTTPException(
                 status_code=500,
@@ -247,6 +256,112 @@ class LLMService:
             )
 
         return {"api_key": api_key, "base_url": base_url, "model": model}
+
+    @staticmethod
+    def _normalize_ollama_host(host: Optional[str]) -> Optional[str]:
+        """归一化 Ollama host，避免误填 OpenAI 风格路径（如 /v1）。"""
+        if host is None:
+            return None
+
+        normalized = host.strip().rstrip("/")
+        if not normalized:
+            return None
+
+        removable_suffixes = ("/v1/models", "/v1/embeddings", "/v1")
+        changed = True
+        while changed:
+            changed = False
+            normalized_lower = normalized.lower()
+            for suffix in removable_suffixes:
+                if normalized_lower.endswith(suffix):
+                    normalized = normalized[: -len(suffix)].rstrip("/")
+                    changed = True
+                    break
+
+        return normalized or None
+
+    @staticmethod
+    def _extract_ollama_embed_vector(response: Any) -> Optional[List[float]]:
+        """解析 /api/embed 响应，提取第一条向量。"""
+        embeddings = response.get("embeddings") if isinstance(response, dict) else getattr(response, "embeddings", None)
+        if not embeddings:
+            return None
+        first = embeddings[0] if isinstance(embeddings, list) else None
+        if first is None:
+            return None
+        return first if isinstance(first, list) else list(first)
+
+    @staticmethod
+    def _extract_ollama_legacy_vector(response: Any) -> Optional[List[float]]:
+        """解析 /api/embeddings（旧接口）响应。"""
+        embedding = response.get("embedding") if isinstance(response, dict) else getattr(response, "embedding", None)
+        if not embedding:
+            return None
+        return embedding if isinstance(embedding, list) else list(embedding)
+
+    @staticmethod
+    def _normalize_openai_embeddings_url(base_url: Optional[str]) -> Optional[str]:
+        """将 OpenAI 兼容 base_url 规整为可直接 POST 的 /embeddings 端点。"""
+        if not base_url:
+            return None
+        trimmed = base_url.strip().rstrip("/")
+        if not trimmed:
+            return None
+
+        lowered = trimmed.lower()
+        if lowered.endswith("/embeddings"):
+            return trimmed
+        if lowered.endswith("/v1"):
+            return f"{trimmed}/embeddings"
+
+        parsed = urlparse(trimmed)
+        if parsed.path in {"", "/"}:
+            return f"{trimmed}/v1/embeddings"
+        return f"{trimmed}/embeddings"
+
+    async def _request_ollama_embedding(
+        self,
+        client: Any,
+        *,
+        model: str,
+        text: str,
+        base_url: Optional[str],
+    ) -> List[float]:
+        """
+        优先调用 Ollama 原生 /api/embed，若服务端较旧则回退 /api/embeddings。
+        """
+        if hasattr(client, "embed"):
+            try:
+                response = await client.embed(model=model, input=text)
+                embedding = self._extract_ollama_embed_vector(response)
+                if embedding:
+                    return embedding
+                logger.warning("Ollama /api/embed 返回空向量: model=%s base_url=%s", model, base_url)
+            except Exception as exc:
+                logger.warning(
+                    "Ollama /api/embed 请求失败，尝试回退旧接口 /api/embeddings: model=%s base_url=%s error=%s",
+                    model,
+                    base_url,
+                    exc,
+                )
+
+        try:
+            response = await client.embeddings(model=model, prompt=text)
+        except Exception as exc:  # pragma: no cover - 本地服务调用失败
+            logger.error(
+                "Ollama 嵌入请求失败: model=%s base_url=%s error=%s",
+                model,
+                base_url,
+                exc,
+                exc_info=True,
+            )
+            return []
+
+        embedding = self._extract_ollama_legacy_vector(response)
+        if not embedding:
+            logger.warning("Ollama /api/embeddings 返回空向量: model=%s base_url=%s", model, base_url)
+            return []
+        return embedding
 
     async def get_embedding(
         self,
@@ -259,9 +374,13 @@ class LLMService:
         user_llm_config = await self.llm_repo.get_by_user(user_id) if user_id else None
         user_embedding_model = user_llm_config.embedding_provider_model if user_llm_config else None
         user_embedding_base_url = user_llm_config.embedding_provider_url if user_llm_config else None
+        user_embedding_api_key = user_llm_config.embedding_provider_api_key if user_llm_config else None
         user_llm_base_url = user_llm_config.llm_provider_url if user_llm_config else None
 
-        provider = await self._get_config_value("embedding.provider") or "ollama"
+        provider = ((await self._get_config_value("embedding.provider")) or "ollama").strip().lower()
+        if provider not in {"openai", "ollama"}:
+            logger.error("非法 embedding.provider 配置: %s", provider)
+            raise HTTPException(status_code=500, detail="embedding.provider 仅支持 openai 或 ollama")
         default_model = (
             user_embedding_model
             or await self._get_config_value("ollama.embedding_model")
@@ -278,62 +397,92 @@ class LLMService:
                 logger.error("未安装 ollama 依赖，无法调用本地嵌入模型。")
                 raise HTTPException(status_code=500, detail="缺少 Ollama 依赖，请先安装 ollama 包。")
 
-            base_url = (
+            raw_base_url = (
                 user_embedding_base_url
+                or user_llm_base_url
                 or await self._get_config_value("ollama.embedding_base_url")
                 or await self._get_config_value("embedding.base_url")
             )
-            client = OllamaAsyncClient(host=base_url)
-            try:
-                response = await client.embeddings(model=target_model, prompt=text)
-            except Exception as exc:  # pragma: no cover - 本地服务调用失败
-                logger.error(
-                    "Ollama 嵌入请求失败: model=%s base_url=%s error=%s",
-                    target_model,
+            base_url = self._normalize_ollama_host(raw_base_url)
+            if raw_base_url and raw_base_url != base_url:
+                logger.warning(
+                    "检测到 Ollama 地址包含 OpenAI 风格路径，已自动修正: raw=%s normalized=%s",
+                    raw_base_url,
                     base_url,
-                    exc,
-                    exc_info=True,
                 )
-                return []
-            embedding: Optional[List[float]]
-            if isinstance(response, dict):
-                embedding = response.get("embedding")
-            else:
-                embedding = getattr(response, "embedding", None)
+            client = OllamaAsyncClient(host=base_url)
+            embedding = await self._request_ollama_embedding(
+                client,
+                model=target_model,
+                text=text,
+                base_url=base_url,
+            )
             if not embedding:
-                logger.warning("Ollama 返回空向量: model=%s", target_model)
                 return []
-            if not isinstance(embedding, list):
-                embedding = list(embedding)
         else:
-            config = await self._resolve_llm_config(user_id)
-            api_key = await self._get_config_value("embedding.api_key") or config["api_key"]
+            config = await self._resolve_llm_config_with_policy(user_id, require_api_key=False)
+            api_key = user_embedding_api_key or await self._get_config_value("embedding.api_key") or config["api_key"]
             base_url = (
                 user_embedding_base_url
                 or user_llm_base_url
                 or await self._get_config_value("embedding.base_url")
                 or config.get("base_url")
             )
-            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-            try:
-                response = await client.embeddings.create(
-                    input=text,
-                    model=target_model,
-                )
-            except Exception as exc:  # pragma: no cover - 网络或鉴权失败
-                logger.error(
-                    "OpenAI 嵌入请求失败: model=%s base_url=%s user_id=%s error=%s",
-                    target_model,
-                    base_url,
-                    user_id,
-                    exc,
-                    exc_info=True,
-                )
-                return []
-            if not response.data:
-                logger.warning("OpenAI 嵌入请求返回空数据: model=%s user_id=%s", target_model, user_id)
-                return []
-            embedding = response.data[0].embedding
+            if api_key:
+                client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+                try:
+                    response = await client.embeddings.create(
+                        input=text,
+                        model=target_model,
+                    )
+                except Exception as exc:  # pragma: no cover - 网络或鉴权失败
+                    logger.error(
+                        "OpenAI 嵌入请求失败: model=%s base_url=%s user_id=%s error=%s",
+                        target_model,
+                        base_url,
+                        user_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    return []
+                if not response.data:
+                    logger.warning("OpenAI 嵌入请求返回空数据: model=%s user_id=%s", target_model, user_id)
+                    return []
+                embedding = response.data[0].embedding
+            else:
+                endpoint = self._normalize_openai_embeddings_url(base_url)
+                if not endpoint:
+                    logger.error("OpenAI 嵌入请求失败: 未配置可用 base_url，且未提供 API Key")
+                    return []
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(
+                            endpoint,
+                            json={"input": text, "model": target_model},
+                            headers={"Content-Type": "application/json"},
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                except Exception as exc:  # pragma: no cover - 网络或协议失败
+                    logger.error(
+                        "OpenAI 无 Key 嵌入请求失败: model=%s endpoint=%s user_id=%s error=%s",
+                        target_model,
+                        endpoint,
+                        user_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    return []
+
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not data:
+                    logger.warning("OpenAI 无 Key 嵌入请求返回空数据: model=%s endpoint=%s", target_model, endpoint)
+                    return []
+                first = data[0] if isinstance(data, list) else None
+                if not isinstance(first, dict) or "embedding" not in first:
+                    logger.warning("OpenAI 无 Key 嵌入响应结构异常: model=%s endpoint=%s", target_model, endpoint)
+                    return []
+                embedding = first["embedding"]
 
         if not isinstance(embedding, list):
             embedding = list(embedding)

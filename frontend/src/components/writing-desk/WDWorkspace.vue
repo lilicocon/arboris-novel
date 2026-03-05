@@ -285,6 +285,24 @@ const isChapterEvaluationFailed = (chapterNumber: number) => {
   return chapter && chapter.generation_status === 'evaluation_failed'
 }
 
+const isInProgressStatus = (status: Chapter['generation_status'] | null | undefined) => {
+  return status === 'generating' || status === 'evaluating' || status === 'selecting'
+}
+
+const isGeneratingInFlight = computed(() => {
+  if (props.selectedChapterNumber === null) return false
+  if (props.generatingChapter !== props.selectedChapterNumber) return false
+
+  // When retrying from failed state, backend status might lag behind.
+  // Keep showing progress UI while local request is still in-flight.
+  const status = selectedChapter.value?.generation_status
+  return !(
+    status === 'waiting_for_confirm' ||
+    status === 'successful' ||
+    status === 'selecting'
+  )
+})
+
 const canGenerateChapter = (chapterNumber: number | null) => {
   if (chapterNumber === null || !props.project?.blueprint?.chapter_outline) return false
 
@@ -313,7 +331,7 @@ const currentComponent = computed(() => {
   }
 
   const status = selectedChapter.value?.generation_status
-  if (status === 'generating' || status === 'evaluating' || status === 'selecting') {
+  if (isInProgressStatus(status) || isGeneratingInFlight.value) {
     return ChapterGenerating // Use a generic "in-progress" component
   }
 
@@ -332,16 +350,21 @@ const currentComponent = computed(() => {
 
 // Polling for chapter status updates
 const pollingTimer = ref<number | null>(null)
+const lastPollingChapterNumber = ref<number | null>(null)
 const POLLING_INTERVAL_MS = 3000
 
 const requestChapterStatus = () => {
   emit('fetchChapterStatus')
 }
 
-const startPolling = () => {
-  stopPolling()
-  // 启动轮询前先立即拉取一次，减少“需手动刷新”的窗口期
-  requestChapterStatus()
+const startPolling = (immediate: boolean = false) => {
+  // 已在轮询中时不重复启动，避免重置定时器导致请求风暴
+  if (pollingTimer.value !== null) {
+    return
+  }
+  if (immediate) {
+    requestChapterStatus()
+  }
   pollingTimer.value = window.setInterval(() => {
     requestChapterStatus()
   }, POLLING_INTERVAL_MS)
@@ -355,15 +378,16 @@ const stopPolling = () => {
 }
 
 watch(
-  () => ({
-    status: selectedChapter.value?.generation_status,
-    chapterNumber: props.selectedChapterNumber,
-    versionsCount: selectedChapter.value?.versions?.length || 0,
-    hasContent: Boolean(selectedChapter.value?.content),
-  }),
-  ({ status, chapterNumber, versionsCount, hasContent }) => {
+  [
+    () => props.selectedChapterNumber,
+    () => selectedChapter.value?.generation_status ?? null,
+    () => selectedChapter.value?.versions?.length ?? 0,
+    () => Boolean(selectedChapter.value?.content),
+  ],
+  ([chapterNumber, status, versionsCount, hasContent]) => {
     if (chapterNumber === null) {
       stopPolling()
+      lastPollingChapterNumber.value = null
       return
     }
 
@@ -379,10 +403,14 @@ watch(
       (status === 'successful' && !hasContent)
 
     if (needsPolling) {
-      startPolling()
+      const chapterChanged = chapterNumber !== lastPollingChapterNumber.value
+      const shouldRequestImmediately =
+        pollingTimer.value === null || chapterChanged
+      startPolling(shouldRequestImmediately)
     } else {
       stopPolling()
     }
+    lastPollingChapterNumber.value = chapterNumber
   },
   { immediate: true }
 )
@@ -396,10 +424,18 @@ const currentComponentProps = computed(() => {
     return {}
   }
   const status = selectedChapter.value?.generation_status
-  if (status === 'generating' || status === 'evaluating' || status === 'selecting') {
+  const isBackendInProgress = isInProgressStatus(status)
+  if (isBackendInProgress || isGeneratingInFlight.value) {
+    const renderStatus = isBackendInProgress ? status : 'generating'
     return {
       chapterNumber: props.selectedChapterNumber,
-      status: status
+      status: renderStatus,
+      generationProgress: isBackendInProgress ? selectedChapter.value?.generation_progress ?? null : null,
+      generationStep: isBackendInProgress ? selectedChapter.value?.generation_step ?? null : null,
+      generationStepIndex: isBackendInProgress ? selectedChapter.value?.generation_step_index ?? null : null,
+      generationStepTotal: isBackendInProgress ? selectedChapter.value?.generation_step_total ?? null : null,
+      generationStartedAt: isBackendInProgress ? selectedChapter.value?.generation_started_at ?? null : null,
+      statusUpdatedAt: isBackendInProgress ? selectedChapter.value?.status_updated_at ?? null : null,
     }
   }
 

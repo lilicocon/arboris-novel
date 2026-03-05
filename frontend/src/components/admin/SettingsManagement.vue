@@ -35,6 +35,39 @@
     <n-card :bordered="false">
       <template #header>
         <div class="card-header">
+          <span class="card-title">章节生成版本数</span>
+        </div>
+      </template>
+      <n-spin :show="configLoading || chapterVersionSaving">
+        <n-alert v-if="chapterVersionError" type="error" closable @close="chapterVersionError = null">
+          {{ chapterVersionError }}
+        </n-alert>
+        <n-form label-placement="top" class="version-form">
+          <n-form-item label="每章生成候选版本数量（仅支持 1 或 2）">
+            <n-input-number
+              v-model:value="chapterVersionCount"
+              :min="1"
+              :max="2"
+              :step="1"
+              :precision="0"
+              placeholder="请输入 1 或 2"
+            />
+          </n-form-item>
+          <div class="form-hint">
+            优先级：系统配置 <code>writer.chapter_versions</code> &gt; 环境变量 <code>WRITER_CHAPTER_VERSION_COUNT</code>
+          </div>
+          <n-space justify="end">
+            <n-button type="primary" :loading="chapterVersionSaving" @click="saveChapterVersionCount">
+              保存设置
+            </n-button>
+          </n-space>
+        </n-form>
+      </n-spin>
+    </n-card>
+
+    <n-card :bordered="false">
+      <template #header>
+        <div class="card-header">
           <span class="card-title">系统配置</span>
           <n-button type="primary" size="small" @click="openCreateModal">
             新增配置
@@ -126,6 +159,15 @@ const dailyLimitLoading = ref(false)
 const dailyLimitSaving = ref(false)
 const dailyLimitError = ref<string | null>(null)
 
+const WRITER_VERSION_CONFIG_KEY = 'writer.chapter_versions'
+const LEGACY_WRITER_VERSION_CONFIG_KEY = 'writer.version_count'
+const MIN_CHAPTER_VERSION_COUNT = 1
+const MAX_CHAPTER_VERSION_COUNT = 2
+
+const chapterVersionCount = ref<number>(MIN_CHAPTER_VERSION_COUNT)
+const chapterVersionSaving = ref(false)
+const chapterVersionError = ref<string | null>(null)
+
 const configs = ref<SystemConfig[]>([])
 const configLoading = ref(false)
 const configSaving = ref(false)
@@ -142,6 +184,21 @@ const configForm = reactive<SystemConfig>({
 const rowKey = (row: SystemConfig) => row.key
 
 const modalTitle = computed(() => (isCreateMode.value ? '新增配置项' : '编辑配置项'))
+
+const normalizeChapterVersionCount = (value: unknown): number => {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10)
+  if (!Number.isFinite(parsed)) {
+    return MIN_CHAPTER_VERSION_COUNT
+  }
+  return Math.max(MIN_CHAPTER_VERSION_COUNT, Math.min(MAX_CHAPTER_VERSION_COUNT, parsed))
+}
+
+const syncChapterVersionCountFromConfigs = () => {
+  const current = configs.value.find((item) => item.key === WRITER_VERSION_CONFIG_KEY)
+  const legacy = configs.value.find((item) => item.key === LEGACY_WRITER_VERSION_CONFIG_KEY)
+  const rawValue = current?.value ?? legacy?.value ?? String(MIN_CHAPTER_VERSION_COUNT)
+  chapterVersionCount.value = normalizeChapterVersionCount(rawValue)
+}
 
 const fetchDailyLimit = async () => {
   dailyLimitLoading.value = true
@@ -177,10 +234,36 @@ const fetchConfigs = async () => {
   configError.value = null
   try {
     configs.value = await AdminAPI.listSystemConfigs()
+    syncChapterVersionCountFromConfigs()
   } catch (err) {
     configError.value = err instanceof Error ? err.message : '加载配置失败'
   } finally {
     configLoading.value = false
+  }
+}
+
+const saveChapterVersionCount = async () => {
+  chapterVersionError.value = null
+  chapterVersionSaving.value = true
+  try {
+    const normalized = normalizeChapterVersionCount(chapterVersionCount.value)
+    chapterVersionCount.value = normalized
+    const updated = await AdminAPI.upsertSystemConfig(WRITER_VERSION_CONFIG_KEY, {
+      value: String(normalized),
+      description: '每次生成章节的候选版本数量（支持 1~2）。'
+    })
+    const index = configs.value.findIndex((item) => item.key === updated.key)
+    if (index === -1) {
+      configs.value.unshift(updated)
+    } else {
+      configs.value.splice(index, 1, updated)
+    }
+    showAlert('章节生成版本数已更新', 'success')
+  } catch (err) {
+    chapterVersionError.value = err instanceof Error ? err.message : '保存章节版本数失败'
+    showAlert(chapterVersionError.value, 'error')
+  } finally {
+    chapterVersionSaving.value = false
   }
 }
 
@@ -206,22 +289,37 @@ const closeConfigModal = () => {
 }
 
 const submitConfig = async () => {
-  if (!configForm.key.trim() || !configForm.value.trim()) {
+  const normalizedKey = configForm.key.trim()
+  const normalizedValue = configForm.value.trim()
+
+  if (!normalizedKey || !normalizedValue) {
     showAlert('Key 与 Value 均为必填项', 'error')
     return
   }
+
+  if (
+    normalizedKey === WRITER_VERSION_CONFIG_KEY
+    || normalizedKey === LEGACY_WRITER_VERSION_CONFIG_KEY
+  ) {
+    const parsed = Number.parseInt(normalizedValue, 10)
+    if (!Number.isFinite(parsed) || parsed < MIN_CHAPTER_VERSION_COUNT || parsed > MAX_CHAPTER_VERSION_COUNT) {
+      showAlert('章节版本数仅支持设置为 1 或 2', 'error')
+      return
+    }
+  }
+
   configSaving.value = true
   try {
     let updated: SystemConfig
     if (isCreateMode.value) {
-      updated = await AdminAPI.upsertSystemConfig(configForm.key.trim(), {
-        value: configForm.value,
+      updated = await AdminAPI.upsertSystemConfig(normalizedKey, {
+        value: normalizedValue,
         description: configForm.description || undefined
       })
       configs.value.unshift(updated)
     } else {
       updated = await AdminAPI.patchSystemConfig(configForm.key, {
-        value: configForm.value,
+        value: normalizedValue,
         description: configForm.description || undefined
       } as SystemConfigUpdatePayload)
       const index = configs.value.findIndex((item) => item.key === updated.key)
@@ -229,6 +327,7 @@ const submitConfig = async () => {
         configs.value.splice(index, 1, updated)
       }
     }
+    syncChapterVersionCountFromConfigs()
     showAlert('配置已保存', 'success')
     closeConfigModal()
   } catch (err) {
@@ -242,6 +341,7 @@ const deleteConfig = async (key: string) => {
   try {
     await AdminAPI.deleteSystemConfig(key)
     configs.value = configs.value.filter((item) => item.key !== key)
+    syncChapterVersionCountFromConfigs()
     showAlert('配置已删除', 'success')
   } catch (err) {
     showAlert(err instanceof Error ? err.message : '删除失败', 'error')
@@ -342,6 +442,16 @@ onMounted(() => {
 
 .limit-form {
   max-width: 360px;
+}
+
+.version-form {
+  max-width: 540px;
+}
+
+.form-hint {
+  margin: 2px 0 12px;
+  color: #6b7280;
+  font-size: 0.875rem;
 }
 
 .config-modal {

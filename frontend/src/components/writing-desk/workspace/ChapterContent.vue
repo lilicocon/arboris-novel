@@ -34,7 +34,7 @@
           <!-- 分层优化按钮 -->
           <button
             class="md-btn md-btn-tonal md-ripple flex items-center gap-1"
-            @click="showOptimizer = true"
+            @click="openOptimizerPanel"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
@@ -55,7 +55,9 @@
         </div>
       </div>
       <div class="prose max-w-none">
-        <div class="whitespace-pre-wrap leading-relaxed" style="color: var(--md-on-surface);">{{ cleanVersionContent(selectedChapter.content || '') }}</div>
+        <div class="chapter-prose" style="color: var(--md-on-surface);">
+          <p v-for="(paragraph, idx) in chapterDisplayParagraphs" :key="`chapter-${idx}`">{{ paragraph }}</p>
+        </div>
       </div>
     </div>
 
@@ -64,7 +66,7 @@
       <div
         v-if="showOptimizer"
         class="md-dialog-overlay"
-        @click.self="showOptimizer = false"
+        @click.self="closeOptimizerModal"
       >
         <div class="md-dialog m3-optimizer-dialog">
           <div class="p-6">
@@ -75,8 +77,10 @@
                 <p class="md-body-small md-on-surface-variant mt-1">选择一个维度进行深度优化，让文字更有灵魂</p>
               </div>
               <button
-                @click="showOptimizer = false"
+                @click="closeOptimizerModal"
+                :disabled="isOptimizing"
                 class="md-icon-btn md-ripple"
+                :class="{ 'opacity-40 cursor-not-allowed': isOptimizing }"
               >
                 <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
                   <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
@@ -90,11 +94,13 @@
                 v-for="dim in optimizeDimensions"
                 :key="dim.key"
                 @click="selectedDimension = dim.key"
+                :disabled="isOptimizing"
                 :class="[
                   'md-card md-card-outlined p-4 text-left transition-all duration-200',
                   selectedDimension === dim.key
                     ? 'm3-option-selected'
-                    : 'm3-option'
+                    : 'm3-option',
+                  isOptimizing ? 'opacity-70 cursor-not-allowed' : ''
                 ]"
               >
                 <div class="flex items-center gap-3 mb-2">
@@ -115,14 +121,32 @@
                 rows="3"
                 class="md-textarea w-full resize-none"
                 placeholder="例如：加强主角内心的挣扎感，让对话更有张力..."
+                :disabled="isOptimizing"
               ></textarea>
+            </div>
+
+            <!-- 优化进度 -->
+            <div v-if="isOptimizing" class="m3-optimizing-panel mb-6">
+              <div class="flex items-center gap-2 mb-2">
+                <span class="md-body-small font-medium">
+                  正在优化{{ selectedDimensionLabel ? `：${selectedDimensionLabel}` : '' }}
+                </span>
+                <span class="m3-optimizing-dots" aria-hidden="true">
+                  <i></i><i></i><i></i>
+                </span>
+              </div>
+              <p class="md-body-small md-on-surface-variant mb-3">{{ currentOptimizeHint }}</p>
+              <div class="m3-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="优化进行中">
+                <div class="m3-progress-bar"></div>
+              </div>
             </div>
 
             <!-- 操作按钮 -->
             <div class="flex justify-end gap-3">
               <button
-                @click="showOptimizer = false"
-                class="md-btn md-btn-outlined md-ripple"
+                @click="closeOptimizerModal"
+                :disabled="isOptimizing"
+                class="md-btn md-btn-outlined md-ripple disabled:opacity-50"
               >
                 取消
               </button>
@@ -147,7 +171,7 @@
       <div
         v-if="showOptimizeResult"
         class="md-dialog-overlay"
-        @click.self="showOptimizeResult = false"
+        @click.self="closeOptimizeResult"
       >
         <div class="md-dialog m3-result-dialog flex flex-col">
           <div class="p-6 border-b" style="border-bottom-color: var(--md-outline-variant);">
@@ -157,7 +181,7 @@
                 <p class="md-body-small md-on-surface-variant mt-1">{{ optimizeResultNotes }}</p>
               </div>
               <button
-                @click="showOptimizeResult = false"
+                @click="closeOptimizeResult"
                 class="md-icon-btn md-ripple"
               >
                 <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
@@ -168,12 +192,24 @@
           </div>
           <div class="flex-1 overflow-y-auto p-6">
             <div class="prose max-w-none">
-              <div class="whitespace-pre-wrap leading-relaxed" style="color: var(--md-on-surface);">{{ optimizedContent }}</div>
+              <div class="chapter-prose" style="color: var(--md-on-surface);">
+                <p v-for="(paragraph, idx) in optimizedDisplayParagraphs" :key="`optimized-${idx}`">{{ paragraph }}</p>
+              </div>
             </div>
           </div>
-          <div class="p-6 border-t flex justify-end gap-3" style="border-top-color: var(--md-outline-variant);">
+          <div class="p-6 border-t flex items-center justify-end gap-3" style="border-top-color: var(--md-outline-variant);">
+            <div class="md-body-small md-on-surface-variant m3-preview-metric">
+              共 {{ optimizedPreviewCharCount }} 字
+            </div>
             <button
-              @click="showOptimizeResult = false"
+              @click="reselectOptimization"
+              :disabled="isApplying"
+              class="md-btn md-btn-tonal md-ripple disabled:opacity-50"
+            >
+              重新选择优化
+            </button>
+            <button
+              @click="closeOptimizeResult"
               class="md-btn md-btn-outlined md-ripple"
             >
               取消
@@ -197,7 +233,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { Chapter } from '@/api/novel'
 import { OptimizerAPI } from '@/api/novel'
@@ -220,6 +256,8 @@ const isOptimizing = ref(false)
 const isApplying = ref(false)
 const optimizedContent = ref('')
 const optimizeResultNotes = ref('')
+const optimizeHintIndex = ref(0)
+let optimizeHintTimer: number | null = null
 
 // 优化维度配置
 const optimizeDimensions = [
@@ -248,6 +286,39 @@ const optimizeDimensions = [
     description: '优化文字节奏，增强阅读体验'
   }
 ]
+
+const optimizeHints = [
+  '正在重构句式与语气，保持人物声音一致性',
+  '正在增强细节密度，补充情绪与感官锚点',
+  '正在检查段落节奏，确保阅读流畅且有张力',
+  '正在收敛表达，避免空泛描述并强化画面感'
+]
+
+const selectedDimensionLabel = computed(() => {
+  const item = optimizeDimensions.find((dim) => dim.key === selectedDimension.value)
+  return item?.label ?? ''
+})
+
+const currentOptimizeHint = computed(
+  () => optimizeHints[optimizeHintIndex.value % optimizeHints.length]
+)
+
+const startOptimizeHintRotation = () => {
+  optimizeHintIndex.value = 0
+  if (optimizeHintTimer !== null) {
+    window.clearInterval(optimizeHintTimer)
+  }
+  optimizeHintTimer = window.setInterval(() => {
+    optimizeHintIndex.value = (optimizeHintIndex.value + 1) % optimizeHints.length
+  }, 1600)
+}
+
+const stopOptimizeHintRotation = () => {
+  if (optimizeHintTimer !== null) {
+    window.clearInterval(optimizeHintTimer)
+    optimizeHintTimer = null
+  }
+}
 
 const cleanVersionContent = (content: string): string => {
   if (!content) return ''
@@ -286,6 +357,80 @@ const cleanVersionContent = (content: string): string => {
   cleaned = cleaned.replace(/\\t/g, '\t')
   cleaned = cleaned.replace(/\\\\/g, '\\')
   return cleaned
+}
+
+const splitChapterParagraphs = (content: string): string[] => {
+  if (!content) return []
+  const normalized = content
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  if (!normalized) return []
+
+  const paragraphs = normalized
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (paragraphs.length !== 1) {
+    return paragraphs
+  }
+
+  // 单段超长文本兜底：按句号等标点粗分段，提升可读性
+  const singleParagraph = paragraphs[0]
+  const sentences = (
+    singleParagraph.match(/[^。！？!?；;]+[。！？!?；;]?/g)
+    || [singleParagraph]
+  )
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+
+  if (sentences.length < 6) {
+    return paragraphs
+  }
+
+  const grouped: string[] = []
+  for (let i = 0; i < sentences.length; i += 2) {
+    grouped.push(`${sentences[i]}${sentences[i + 1] || ''}`.trim())
+  }
+  return grouped.filter(Boolean)
+}
+
+const chapterDisplayParagraphs = computed(() =>
+  splitChapterParagraphs(cleanVersionContent(props.selectedChapter.content || ''))
+)
+
+const optimizedPreviewText = computed(() =>
+  cleanVersionContent(optimizedContent.value || '')
+)
+
+const optimizedPreviewCharCount = computed(() => optimizedPreviewText.value.length)
+const hasOptimizedResult = computed(() => Boolean(optimizedPreviewText.value.trim()))
+
+const optimizedDisplayParagraphs = computed(() =>
+  splitChapterParagraphs(optimizedPreviewText.value)
+)
+
+const openOptimizerPanel = () => {
+  if (hasOptimizedResult.value) {
+    showOptimizeResult.value = true
+    showOptimizer.value = false
+    return
+  }
+  showOptimizer.value = true
+}
+
+const closeOptimizeResult = () => {
+  if (isApplying.value) return
+  showOptimizeResult.value = false
+}
+
+const reselectOptimization = () => {
+  if (isApplying.value) return
+  showOptimizeResult.value = false
+  showOptimizer.value = true
 }
 
 const sanitizeFileName = (name: string): string => {
@@ -400,13 +545,17 @@ const normalizeOptimizeResult = (
 }
 
 const startOptimize = async () => {
-  if (!selectedDimension.value || !props.projectId) {
+  if (!selectedDimension.value) {
     globalAlert.showError('请选择优化维度')
+    return
+  }
+  if (!props.projectId) {
+    globalAlert.showError('缺少项目信息，无法执行优化')
     return
   }
 
   isOptimizing.value = true
-  showOptimizer.value = false
+  startOptimizeHintRotation()
 
   try {
     const result = await OptimizerAPI.optimizeChapter({
@@ -419,13 +568,20 @@ const startOptimize = async () => {
     const normalized = normalizeOptimizeResult(result.optimized_content, result.optimization_notes)
     optimizedContent.value = normalized.content
     optimizeResultNotes.value = normalized.notes
+    showOptimizer.value = false
     showOptimizeResult.value = true
   } catch (error: any) {
     console.error('优化失败:', error)
     globalAlert.showError(error.message || '优化失败，请稍后重试')
   } finally {
+    stopOptimizeHintRotation()
     isOptimizing.value = false
   }
+}
+
+const closeOptimizerModal = () => {
+  if (isOptimizing.value) return
+  showOptimizer.value = false
 }
 
 const applyOptimization = async () => {
@@ -458,6 +614,10 @@ const applyOptimization = async () => {
     isApplying.value = false
   }
 }
+
+onUnmounted(() => {
+  stopOptimizeHintRotation()
+})
 </script>
 
 <style scoped>
@@ -465,12 +625,69 @@ const applyOptimization = async () => {
   max-width: min(720px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   border-radius: var(--md-radius-xl);
+  animation: optimizer-pop-in 0.24s ease-out both;
 }
 
 .m3-result-dialog {
   max-width: min(900px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   border-radius: var(--md-radius-xl);
+}
+
+.m3-optimizing-panel {
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--md-radius-md);
+  background: linear-gradient(
+    120deg,
+    color-mix(in srgb, var(--md-primary-container) 70%, white) 0%,
+    color-mix(in srgb, var(--md-surface-container-low) 85%, white) 100%
+  );
+  padding: 12px 14px;
+}
+
+.m3-progress-track {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background-color: color-mix(in srgb, var(--md-primary) 16%, white);
+}
+
+.m3-progress-bar {
+  width: 45%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--md-primary) 72%, white) 0%,
+    var(--md-primary) 55%,
+    color-mix(in srgb, var(--md-primary) 82%, white) 100%
+  );
+  animation: optimizer-progress-slide 1.05s ease-in-out infinite;
+}
+
+.m3-optimizing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.m3-optimizing-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--md-primary);
+  display: inline-block;
+  animation: optimizer-dot-bounce 0.9s ease-in-out infinite;
+}
+
+.m3-optimizing-dots i:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.m3-optimizing-dots i:nth-child(3) {
+  animation-delay: 0.24s;
 }
 
 .m3-option {
@@ -481,5 +698,49 @@ const applyOptimization = async () => {
   border-color: var(--md-primary);
   background-color: var(--md-primary-container);
   box-shadow: var(--md-elevation-1);
+}
+
+.chapter-prose p {
+  margin: 0 0 0.9em;
+  line-height: 1.9;
+  text-indent: 2em;
+  white-space: pre-wrap;
+}
+
+.chapter-prose p:last-child {
+  margin-bottom: 0;
+}
+
+@keyframes optimizer-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes optimizer-progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(240%);
+  }
+}
+
+@keyframes optimizer-dot-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-2px);
+    opacity: 1;
+  }
 }
 </style>
