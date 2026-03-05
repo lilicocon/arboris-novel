@@ -11,7 +11,7 @@ from ..schemas.user import UserCreate, UserCreateAdmin, UserInDB, UserUpdateAdmi
 
 
 class UserService:
-    """用户领域服务，负责注册、查询与配额统计。"""
+    """用户领域服务，负责注册与查询。"""
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -54,13 +54,6 @@ class UserService:
     async def list_users(self) -> list[UserInDB]:
         users = await self.repo.list_all()
         return [UserInDB.model_validate(item) for item in users]
-
-    async def increment_daily_request(self, user_id: int) -> None:
-        await self.repo.increment_daily_request(user_id)
-        await self.session.commit()
-
-    async def get_daily_request(self, user_id: int) -> int:
-        return await self.repo.get_daily_request(user_id)
 
     async def create_user_admin(self, payload: UserCreateAdmin) -> UserInDB:
         if payload.is_admin:

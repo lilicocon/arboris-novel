@@ -1,7 +1,5 @@
 /* AIMETA P=主CSS_全局样式和Tailwind导入|R=全局样式_Tailwind|NR=不含组件样式|E=-|X=internal|A=全局样式|D=tailwindcss|S=dom|RD=./README.ai */
 @import "tailwindcss";
-/* Google Fonts - Roboto */
-@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap');
 
 @plugin "@tailwindcss/typography";
 
@@ -75,8 +73,8 @@
   --md-on-warning-container: #5F4B08;
   
   /* Typography Scale */
-  --md-font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --md-font-mono: 'Roboto Mono', monospace;
+  --md-font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+  --md-font-mono: 'Consolas', 'JetBrains Mono', 'Courier New', monospace;
   
   /* Display */
   --md-display-large: 57px;

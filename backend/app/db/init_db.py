@@ -16,6 +16,9 @@ from .system_config_defaults import SYSTEM_CONFIG_DEFAULTS
 from .session import AsyncSessionLocal, engine
 
 logger = logging.getLogger(__name__)
+LEGACY_SYSTEM_CONFIG_KEYS_TO_DELETE = (
+    "updates.version_check_url",
+)
 
 
 async def init_db() -> None:
@@ -49,7 +52,14 @@ async def init_db() -> None:
                 await session.rollback()
                 logger.exception("默认管理员创建失败，可能是并发启动导致，请检查数据库状态")
 
-        # ---- 第三步：同步系统配置到数据库 ----
+        # ---- 第三步：清理已废弃的系统配置键 ----
+        for legacy_key in LEGACY_SYSTEM_CONFIG_KEYS_TO_DELETE:
+            legacy_config = await session.get(SystemConfig, legacy_key)
+            if legacy_config:
+                await session.delete(legacy_config)
+                logger.info("已清理废弃系统配置键：%s", legacy_key)
+
+        # ---- 第四步：同步系统配置到数据库 ----
         for entry in SYSTEM_CONFIG_DEFAULTS:
             value = entry.value_getter(settings)
             if value is None:
@@ -144,6 +154,8 @@ async def _ensure_schema_updates() -> None:
                     sync_conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_provider_api_key TEXT"))
                 if "embedding_provider_model" not in llm_columns:
                     sync_conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_provider_model TEXT"))
+                if "embedding_provider_format" not in llm_columns:
+                    sync_conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_provider_format TEXT"))
         await conn.run_sync(_upgrade)
 
 

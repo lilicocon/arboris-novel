@@ -130,6 +130,36 @@
       </div>
       <div class="border border-gray-200 rounded-xl p-4 space-y-4">
         <h3 class="text-base font-semibold text-gray-800">向量模型配置</h3>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">向量请求格式</label>
+          <div class="mt-2 inline-flex rounded-md shadow-sm overflow-hidden border border-gray-300">
+            <button
+              type="button"
+              class="px-4 py-2 text-sm transition-colors"
+              :class="config.embedding_provider_format === 'openai'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-50'"
+              @click="setEmbeddingProviderFormat('openai')"
+            >
+              OpenAI 兼容
+            </button>
+            <button
+              type="button"
+              class="px-4 py-2 text-sm transition-colors border-l border-gray-300"
+              :class="config.embedding_provider_format === 'ollama'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-50'"
+              @click="setEmbeddingProviderFormat('ollama')"
+            >
+              Ollama
+            </button>
+          </div>
+          <p class="mt-2 text-xs text-gray-500">
+            当前格式：<code class="font-mono">{{ config.embedding_provider_format }}</code>
+            。OpenAI 兼容走 <code class="font-mono">/v1/embeddings</code>，Ollama 走
+            <code class="font-mono">/api/embed</code> 或 <code class="font-mono">/api/embeddings</code>。
+          </p>
+        </div>
         <label class="flex items-center gap-2 text-sm text-gray-700">
           <input
             v-model="useMainUrlForEmbedding"
@@ -146,7 +176,7 @@
               v-model="config.embedding_provider_url"
               type="text"
               class="block w-full px-3 py-2 pr-10 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-              placeholder="http://127.0.0.1:11434（Ollama 不要带 /v1）"
+              :placeholder="embeddingUrlPlaceholder"
             >
             <button
               type="button"
@@ -160,7 +190,7 @@
             </button>
           </div>
           <p class="mt-2 text-xs text-amber-600">
-            使用 Ollama 向量模型时，地址应为 <code class="font-mono">http://host:11434</code>，不要追加 <code class="font-mono">/v1</code>。
+            {{ embeddingUrlHint }}
           </p>
         </div>
         <label class="flex items-center gap-2 text-sm text-gray-700">
@@ -285,6 +315,8 @@
 import { ref, onMounted, computed, type Ref } from 'vue';
 import { getLLMConfig, createOrUpdateLLMConfig, deleteLLMConfig, getAvailableModels, type LLMConfigCreate } from '@/api/llm';
 
+type EmbeddingProviderFormat = 'openai' | 'ollama';
+
 interface LLMSettingsForm {
   llm_provider_url: string;
   llm_provider_api_key: string;
@@ -292,6 +324,7 @@ interface LLMSettingsForm {
   embedding_provider_url: string;
   embedding_provider_api_key: string;
   embedding_provider_model: string;
+  embedding_provider_format: EmbeddingProviderFormat;
 }
 
 const createEmptyConfig = (): LLMSettingsForm => ({
@@ -301,6 +334,7 @@ const createEmptyConfig = (): LLMSettingsForm => ({
   embedding_provider_url: '',
   embedding_provider_api_key: '',
   embedding_provider_model: '',
+  embedding_provider_format: 'openai',
 });
 
 const config = ref<LLMSettingsForm>(createEmptyConfig());
@@ -322,20 +356,51 @@ const lastEmbeddingLoadError = ref('');
 const lastEmbeddingLoadInfo = ref('');
 const hasTriedAutoLoadEmbeddingModels = ref(false);
 
-const normalizeLikelyOllamaUrl = (rawUrl: string): string => {
+const inferEmbeddingProviderFormat = (rawUrl: string): EmbeddingProviderFormat => {
+  const lower = rawUrl.toLowerCase();
+  if (lower.includes(':11434') || lower.includes('ollama')) {
+    return 'ollama';
+  }
+  return 'openai';
+};
+
+const normalizeEmbeddingUrlByFormat = (rawUrl: string, format: EmbeddingProviderFormat): string => {
   const trimmed = rawUrl.trim().replace(/\/+$/, '');
   if (!trimmed) {
     return '';
   }
 
-  const lower = trimmed.toLowerCase();
-  const isLikelyOllama = lower.includes(':11434') || lower.includes('ollama');
-  if (!isLikelyOllama) {
+  if (format !== 'ollama') {
     return trimmed;
   }
 
-  return trimmed.replace(/\/v1(?:\/(?:models|embeddings))?$/i, '');
+  let normalized = trimmed;
+  const removableSuffixes = [/\/v1\/models$/i, /\/v1\/embeddings$/i, /\/v1$/i, /\/api$/i];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const suffix of removableSuffixes) {
+      if (suffix.test(normalized)) {
+        normalized = normalized.replace(suffix, '').replace(/\/+$/, '');
+        changed = true;
+        break;
+      }
+    }
+  }
+  return normalized;
 };
+
+const embeddingUrlPlaceholder = computed(() =>
+  config.value.embedding_provider_format === 'ollama'
+    ? 'http://127.0.0.1:11434（Ollama 不要带 /v1）'
+    : 'https://api.example.com/v1'
+);
+
+const embeddingUrlHint = computed(() =>
+  config.value.embedding_provider_format === 'ollama'
+    ? '使用 Ollama 向量模型时，地址应为 http://host:11434，不要追加 /v1 或 /api。'
+    : '使用 OpenAI 兼容格式时，地址建议为 https://host/v1，系统将请求 /embeddings。'
+);
 
 // 根据输入过滤模型列表
 const filteredModels = computed(() => {
@@ -361,6 +426,10 @@ const filteredEmbeddingModels = computed(() => {
 onMounted(async () => {
   const existingConfig = await getLLMConfig();
   if (existingConfig) {
+    const effectiveUrl = (existingConfig.embedding_provider_url || existingConfig.llm_provider_url || '').trim();
+    const resolvedEmbeddingFormat: EmbeddingProviderFormat =
+      existingConfig.embedding_provider_format || inferEmbeddingProviderFormat(effectiveUrl);
+
     config.value = {
       llm_provider_url: existingConfig.llm_provider_url || '',
       llm_provider_api_key: existingConfig.llm_provider_api_key || '',
@@ -368,6 +437,7 @@ onMounted(async () => {
       embedding_provider_url: existingConfig.embedding_provider_url || '',
       embedding_provider_api_key: existingConfig.embedding_provider_api_key || '',
       embedding_provider_model: existingConfig.embedding_provider_model || '',
+      embedding_provider_format: resolvedEmbeddingFormat,
     };
     useMainUrlForEmbedding.value = !existingConfig.embedding_provider_url;
     useDedicatedEmbeddingApiKey.value = !!existingConfig.embedding_provider_api_key;
@@ -375,7 +445,10 @@ onMounted(async () => {
 });
 
 const buildPayload = (): LLMConfigCreate => {
-  const normalizedEmbeddingUrl = normalizeLikelyOllamaUrl(config.value.embedding_provider_url);
+  const normalizedEmbeddingUrl = normalizeEmbeddingUrlByFormat(
+    config.value.embedding_provider_url,
+    config.value.embedding_provider_format,
+  );
 
   return {
     llm_provider_url: config.value.llm_provider_url.trim() || null,
@@ -388,6 +461,7 @@ const buildPayload = (): LLMConfigCreate => {
       ? (config.value.embedding_provider_api_key.trim() || null)
       : null,
     embedding_provider_model: config.value.embedding_provider_model.trim() || null,
+    embedding_provider_format: config.value.embedding_provider_format,
   };
 };
 
@@ -406,6 +480,10 @@ const handleDelete = async () => {
     availableEmbeddingModels.value = [];
     alert('配置已删除！');
   }
+};
+
+const setEmbeddingProviderFormat = (format: EmbeddingProviderFormat) => {
+  config.value.embedding_provider_format = format;
 };
 
 const toggleApiKeyVisibility = () => {
@@ -441,9 +519,12 @@ const clearEmbeddingModel = () => {
 };
 
 const getEffectiveEmbeddingUrl = (): string => (
-  useMainUrlForEmbedding.value
-    ? config.value.llm_provider_url.trim()
-    : config.value.embedding_provider_url.trim()
+  normalizeEmbeddingUrlByFormat(
+    useMainUrlForEmbedding.value
+      ? config.value.llm_provider_url.trim()
+      : config.value.embedding_provider_url.trim(),
+    config.value.embedding_provider_format,
+  )
 );
 
 const getEffectiveEmbeddingApiKey = (): string => (

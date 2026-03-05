@@ -47,11 +47,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import LLMSettings from '@/components/LLMSettings.vue';
-import { getRemoteVersion, normalizeComparableVersion } from '@/api/version';
+import { getRemoteVersion, normalizeComparableVersion, type RemoteVersionDebugEvent } from '@/api/version';
 
 const localVersion = ((import.meta.env.VITE_APP_VERSION as string | undefined)?.trim()) || 'dev';
 const remoteVersion = ref<string | null>(null);
 const remoteVersionCheckFailed = ref(false);
+const isVersionDebugEnabled = import.meta.env.DEV
+  || ['1', 'true', 'yes', 'on'].includes(String(import.meta.env.VITE_VERSION_DEBUG || '').trim().toLowerCase());
 
 const hasNewVersion = computed(() => {
   if (!remoteVersion.value) {
@@ -60,13 +62,30 @@ const hasNewVersion = computed(() => {
   return normalizeComparableVersion(remoteVersion.value) !== normalizeComparableVersion(localVersion);
 });
 
+const logVersionDebug = (event: RemoteVersionDebugEvent) => {
+  if (!isVersionDebugEnabled) {
+    return;
+  }
+  console.debug('[version-check]', event);
+};
+
 onMounted(async () => {
   try {
-    remoteVersion.value = await getRemoteVersion();
+    remoteVersion.value = await getRemoteVersion(logVersionDebug);
     remoteVersionCheckFailed.value = !remoteVersion.value;
+    if (remoteVersionCheckFailed.value) {
+      logVersionDebug({
+        stage: 'empty_version_result',
+        url: String(import.meta.env.VITE_VERSION_CHECK_URL || '/api/updates/remote-version'),
+        note: 'request succeeded but parsed version is empty',
+      });
+    }
   } catch (error) {
     remoteVersionCheckFailed.value = true;
-    console.error('Failed to fetch remote version:', error);
+    console.error('Failed to fetch remote version:', error, {
+      configuredVersionCheckUrl: String(import.meta.env.VITE_VERSION_CHECK_URL || '').trim() || null,
+      localVersion,
+    });
   }
 });
 </script>

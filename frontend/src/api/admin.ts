@@ -138,10 +138,6 @@ export interface UpdateLogPayload {
   is_pinned?: boolean
 }
 
-export interface DailyRequestLimit {
-  limit: number
-}
-
 export interface SystemConfig {
   key: string
   value: string
@@ -266,17 +262,6 @@ export class AdminAPI {
   }
 
   // Settings
-  static getDailyRequestLimit(): Promise<DailyRequestLimit> {
-    return this.request('/settings/daily-request-limit')
-  }
-
-  static setDailyRequestLimit(limit: number): Promise<DailyRequestLimit> {
-    return this.request('/settings/daily-request-limit', {
-      method: 'PUT',
-      body: JSON.stringify({ limit })
-    })
-  }
-
   static listSystemConfigs(): Promise<SystemConfig[]> {
     return this.request('/system-configs')
   }

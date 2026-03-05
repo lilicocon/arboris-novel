@@ -15,6 +15,8 @@ class NovelRepository(BaseRepository[NovelProject]):
         stmt = (
             select(NovelProject)
             .where(NovelProject.id == project_id)
+            # 强制从数据库刷新同一 Session 中已存在的实体，避免返回旧快照。
+            .execution_options(populate_existing=True)
             .options(
                 selectinload(NovelProject.blueprint),
                 selectinload(NovelProject.characters),

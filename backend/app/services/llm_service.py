@@ -5,14 +5,12 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, PermissionDeniedError
 
 from ..core.config import settings
 from ..repositories.llm_config_repository import LLMConfigRepository
 from ..repositories.system_config_repository import SystemConfigRepository
-from ..repositories.user_repository import UserRepository
-from ..services.admin_setting_service import AdminSettingService
 from ..services.prompt_service import PromptService
 from ..services.usage_service import UsageService
 from ..utils.llm_tool import ChatMessage, LLMClient
@@ -26,14 +24,12 @@ except ImportError:  # pragma: no cover - Ollama 为可选依赖
 
 
 class LLMService:
-    """封装与大模型交互的所有逻辑，包括配额控制与配置选择。"""
+    """封装与大模型交互的所有逻辑，包括模型配置解析与调用。"""
 
     def __init__(self, session):
         self.session = session
         self.llm_repo = LLMConfigRepository(session)
         self.system_config_repo = SystemConfigRepository(session)
-        self.user_repo = UserRepository(session)
-        self.admin_setting_service = AdminSettingService(session)
         self.usage_service = UsageService(session)
         self._embedding_dimensions: Dict[str, int] = {}
 
@@ -250,10 +246,6 @@ class LLMService:
                     "model": config.llm_provider_model,
                 }
 
-        # 检查每日使用次数限制
-        if user_id:
-            await self._enforce_daily_limit(user_id)
-
         api_key = await self._get_config_value("llm.api_key")
         base_url = await self._get_config_value("llm.base_url")
         model = await self._get_config_value("llm.model")
@@ -386,8 +378,13 @@ class LLMService:
         user_embedding_base_url = user_llm_config.embedding_provider_url if user_llm_config else None
         user_embedding_api_key = user_llm_config.embedding_provider_api_key if user_llm_config else None
         user_llm_base_url = user_llm_config.llm_provider_url if user_llm_config else None
+        user_embedding_provider_format = (
+            (user_llm_config.embedding_provider_format or "").strip().lower()
+            if user_llm_config
+            else ""
+        )
 
-        provider = ((await self._get_config_value("embedding.provider")) or "ollama").strip().lower()
+        provider = user_embedding_provider_format or ((await self._get_config_value("embedding.provider")) or "ollama").strip().lower()
         if provider not in {"openai", "ollama"}:
             logger.error("非法 embedding.provider 配置: %s", provider)
             raise HTTPException(status_code=500, detail="embedding.provider 仅支持 openai 或 ollama")
@@ -519,18 +516,6 @@ class LLMService:
             return self._embedding_dimensions[target_model]
         vector_size_str = await self._get_config_value("embedding.model_vector_size")
         return int(vector_size_str) if vector_size_str else None
-
-    async def _enforce_daily_limit(self, user_id: int) -> None:
-        limit_str = await self.admin_setting_service.get("daily_request_limit", "100")
-        limit = int(limit_str or 10)
-        used = await self.user_repo.get_daily_request(user_id)
-        if used >= limit:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="今日请求次数已达上限，请明日再试或设置自定义 API Key。",
-            )
-        await self.user_repo.increment_daily_request(user_id)
-        await self.session.commit()
 
     async def _get_config_value(self, key: str) -> Optional[str]:
         record = await self.system_config_repo.get_by_key(key)

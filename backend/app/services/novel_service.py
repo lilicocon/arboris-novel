@@ -487,6 +487,9 @@ class NovelService:
 
     async def replace_chapter_versions(self, chapter: Chapter, contents: List[str], metadata: Optional[List[Dict]] = None) -> List[ChapterVersion]:
         await self.session.execute(delete(ChapterVersion).where(ChapterVersion.chapter_id == chapter.id))
+        # 清空已选版本，避免关系缓存导致序列化时读到旧正文。
+        chapter.selected_version_id = None
+        chapter.selected_version = None
         versions: List[ChapterVersion] = []
         for index, content in enumerate(contents):
             extra = metadata[index] if metadata and index < len(metadata) else None
@@ -523,6 +526,8 @@ class NovelService:
             raise HTTPException(status_code=400, detail="选中的版本内容为空，无法确认为最终版")
         
         chapter.selected_version_id = selected.id
+        # 同步关系对象，避免同一请求事务中 selected_version 仍为旧缓存。
+        chapter.selected_version = selected
         chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
         chapter.generation_progress = 100
         chapter.generation_step = "completed"
@@ -852,8 +857,23 @@ class NovelService:
 
             # 只有在 include_content=True 时才包含完整内容
             if include_content:
-                if chapter.selected_version:
-                    content = chapter.selected_version.content
+                selected_version = None
+                if chapter.selected_version_id and chapter.versions:
+                    selected_version = next(
+                        (v for v in chapter.versions if v.id == chapter.selected_version_id),
+                        None,
+                    )
+                if (
+                    selected_version is None
+                    and chapter.selected_version
+                    and (
+                        chapter.selected_version_id is None
+                        or chapter.selected_version.id == chapter.selected_version_id
+                    )
+                ):
+                    selected_version = chapter.selected_version
+                if selected_version:
+                    content = selected_version.content
                 if chapter.versions:
                     versions = [
                         v.content

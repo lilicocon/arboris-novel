@@ -160,6 +160,13 @@ class OptimizeResponse(BaseModel):
     dimension: str = Field(..., description="优化维度")
 
 
+class ApplyOptimizationRequest(BaseModel):
+    """应用优化内容请求"""
+    project_id: str = Field(..., description="项目ID")
+    chapter_number: int = Field(..., description="章节编号")
+    optimized_content: str = Field(..., description="优化后的完整内容")
+
+
 # 优化维度到提示词的映射
 DIMENSION_PROMPT_MAP = {
     "dialogue": "optimize_dialogue",
@@ -332,9 +339,10 @@ async def optimize_chapter(
 
 @router.post("/apply-optimization")
 async def apply_optimization(
-    project_id: str,
-    chapter_number: int,
-    optimized_content: str,
+    request: Optional[ApplyOptimizationRequest] = None,
+    project_id: Optional[str] = None,
+    chapter_number: Optional[int] = None,
+    optimized_content: Optional[str] = None,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
 ):
@@ -343,12 +351,20 @@ async def apply_optimization(
     """
     novel_service = NovelService(session)
     
+    # 新版优先使用 JSON body，兼容旧版 query 参数调用
+    resolved_project_id = request.project_id if request else project_id
+    resolved_chapter_number = request.chapter_number if request else chapter_number
+    resolved_optimized_content = request.optimized_content if request else optimized_content
+
+    if not resolved_project_id or resolved_chapter_number is None or resolved_optimized_content is None:
+        raise HTTPException(status_code=422, detail="缺少必填参数: project_id/chapter_number/optimized_content")
+
     # 验证项目所有权
-    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    project = await novel_service.ensure_project_owner(resolved_project_id, current_user.id)
     
     # 获取章节
     chapter = next(
-        (ch for ch in project.chapters if ch.chapter_number == chapter_number),
+        (ch for ch in project.chapters if ch.chapter_number == resolved_chapter_number),
         None
     )
     if not chapter:
@@ -358,14 +374,14 @@ async def apply_optimization(
         raise HTTPException(status_code=400, detail="章节尚未选择版本")
     
     # 更新内容
-    chapter.selected_version.content = optimized_content
+    chapter.selected_version.content = resolved_optimized_content
     await session.commit()
     
     logger.info(
         "用户 %s 应用了项目 %s 第 %s 章的优化内容",
         current_user.id,
-        project_id,
-        chapter_number
+        resolved_project_id,
+        resolved_chapter_number
     )
     
     return {"status": "success", "message": "优化内容已应用"}

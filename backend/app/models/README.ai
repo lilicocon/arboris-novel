@@ -9,7 +9,6 @@ AILIST NAME=system_config.py|K=file|P=系统配置模型_全局配置存储|E=Sy
 AILIST NAME=update_log.py|K=file|P=更新日志模型_系统更新记录|E=UpdateLog|A=更新日志表
 AILIST NAME=usage_metric.py|K=file|P=使用指标模型_API调用统计|E=UsageMetric|A=使用指标表
 AILIST NAME=user.py|K=file|P=用户模型_用户账户定义|E=User|A=用户表
-AILIST NAME=user_daily_request.py|K=file|P=用户日请求模型_每日请求限制|E=UserDailyRequest|A=日请求统计表
 AILIST NAME=memory_layer.py|K=file|P=记忆层模型_角色状态和时间线|E=CharacterState_TimelineEvent_CausalChain|A=角色状态表_时间线表_因果链表
 AILIST NAME=project_memory.py|K=file|P=项目记忆模型_全局摘要和剧情线追踪|E=ProjectMemory_ChapterSnapshot|A=项目记忆表_章节快照表
 AILIST NAME=chapter_blueprint.py|K=file|P=章节蓝图模型_节奏和伏笔元数据|E=ChapterBlueprint_BlueprintTemplate|A=章节蓝图表_蓝图模板表

@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     embedding_provider_url TEXT NULL,
     embedding_provider_api_key TEXT NULL,
     embedding_provider_model TEXT NULL,
+    embedding_provider_format TEXT NULL,
     CONSTRAINT fk_llm_configs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -162,15 +163,6 @@ CREATE TABLE IF NOT EXISTS system_configs (
 CREATE TABLE IF NOT EXISTS admin_settings (
     `key` VARCHAR(64) PRIMARY KEY,
     value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS user_daily_requests (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    request_date DATE NOT NULL,
-    request_count INT DEFAULT 0,
-    UNIQUE KEY uq_user_request_date (user_id, request_date),
-    CONSTRAINT fk_daily_requests_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS usage_metrics (

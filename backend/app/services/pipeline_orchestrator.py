@@ -99,6 +99,7 @@ class PipelineOrchestrator:
         chapter = await self.novel_service.get_or_create_chapter(project_id, chapter_number)
         chapter.real_summary = None
         chapter.selected_version_id = None
+        chapter.selected_version = None
         chapter.status = "generating"
         chapter.generation_started_at = datetime.now(CN_TIMEZONE)
         chapter.generation_progress = 3

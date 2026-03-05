@@ -2,17 +2,13 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class Statistics(BaseModel):
     novel_count: int
     user_count: int
     api_request_count: int
-
-
-class DailyRequestLimit(BaseModel):
-    limit: int = Field(..., ge=0, description="匿名用户每日可用次数")
 
 
 class UpdateLogRead(BaseModel):

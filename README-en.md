@@ -137,9 +137,6 @@ A: Open a PR or an Issue.
 **Q: “Default LLM API Key not configured”?**  
 A: Check `OPENAI_API_KEY` in `.env`. Users can also set a personal API key in settings.
 
-**Q: “Daily request limit reached”?**  
-A: An admin may have set a daily limit. Options: wait until the next day; set your own API key in settings (not subject to quota); or ask the admin to change `daily_request_limit`.
-
 **Q: “AI service timeout” or “Cannot connect to AI service”?**  
 A: Usually network or API issues. Check connectivity, `OPENAI_API_BASE_URL`, and that any self-hosted service is running; then retry.
 

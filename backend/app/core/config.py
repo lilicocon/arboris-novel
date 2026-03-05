@@ -25,11 +25,6 @@ class Settings(BaseSettings):
         env="LOGGING_LEVEL",
         description="应用日志级别",
     )
-    version_check_url: Optional[AnyUrl] = Field(
-        default=None,
-        env="VERSION_CHECK_URL",
-        description="可选的额外远程版本检查接口地址",
-    )
     version_info_url: Optional[AnyUrl] = Field(
         default="https://raw.githubusercontent.com/2754026865/2arboris_novel/refs/heads/main/release-metadata/version-info.json",
         env="VERSION_INFO_URL",

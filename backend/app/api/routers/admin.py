@@ -1,6 +1,6 @@
 # AIMETA P=管理员API_用户管理和系统配置|R=管理员CRUD_系统配置_统计|NR=不含普通用户功能|E=route:POST_GET_/api/admin/*|X=http|A=用户CRUD_配置_统计|D=fastapi,sqlalchemy|S=db|RD=./README.ai
 import logging
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -11,7 +11,6 @@ from ...db.session import get_session
 from ...models import NovelProject, UsageMetric, User
 from ...schemas.admin import (
     AdminNovelSummary,
-    DailyRequestLimit,
     Statistics,
     UpdateLogCreate,
     UpdateLogRead,
@@ -32,7 +31,6 @@ from ...schemas.user import (
     UserUpdateAdmin,
 )
 from ...services.auth_service import AuthService
-from ...services.admin_setting_service import AdminSettingService
 from ...services.config_service import ConfigService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
@@ -49,10 +47,6 @@ def get_prompt_service(session: AsyncSession = Depends(get_session)) -> PromptSe
 
 def get_update_log_service(session: AsyncSession = Depends(get_session)) -> UpdateLogService:
     return UpdateLogService(session)
-
-
-def get_admin_setting_service(session: AsyncSession = Depends(get_session)) -> AdminSettingService:
-    return AdminSettingService(session)
 
 
 def get_config_service(session: AsyncSession = Depends(get_session)) -> ConfigService:
@@ -307,27 +301,6 @@ async def update_update_log(
     )
     logger.info("管理员更新日志 %s", log_id)
     return UpdateLogRead.model_validate(log)
-
-
-@router.get("/settings/daily-request-limit", response_model=DailyRequestLimit)
-async def get_daily_limit(
-    service: AdminSettingService = Depends(get_admin_setting_service),
-    _: None = Depends(get_current_admin),
-) -> DailyRequestLimit:
-    value = await service.get("daily_request_limit", "100")
-    logger.info("管理员查询每日请求上限：%s", value)
-    return DailyRequestLimit(limit=int(value or 100))
-
-
-@router.put("/settings/daily-request-limit", response_model=DailyRequestLimit)
-async def update_daily_limit(
-    payload: DailyRequestLimit,
-    service: AdminSettingService = Depends(get_admin_setting_service),
-    _: None = Depends(get_current_admin),
-) -> DailyRequestLimit:
-    await service.set("daily_request_limit", str(payload.limit))
-    logger.info("管理员设置每日请求上限为 %s", payload.limit)
-    return payload
 
 
 @router.get("/system-configs", response_model=List[SystemConfigRead])

@@ -12,6 +12,7 @@ export interface LLMConfig {
   embedding_provider_url: string | null;
   embedding_provider_api_key: string | null;
   embedding_provider_model: string | null;
+  embedding_provider_format: 'openai' | 'ollama' | null;
 }
 
 export interface LLMConfigCreate {
@@ -21,6 +22,7 @@ export interface LLMConfigCreate {
   embedding_provider_url?: string | null;
   embedding_provider_api_key?: string | null;
   embedding_provider_model?: string | null;
+  embedding_provider_format?: 'openai' | 'ollama' | null;
 }
 
 const getHeaders = () => {

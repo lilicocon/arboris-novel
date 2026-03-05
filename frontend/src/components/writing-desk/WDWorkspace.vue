@@ -261,6 +261,11 @@ const selectedChapterOutline = computed(() => {
   return props.project.blueprint.chapter_outline.find(ch => ch.chapter_number === props.selectedChapterNumber) || null
 })
 
+const hasSelectedChapterContent = computed(() => {
+  const content = selectedChapter.value?.content
+  return typeof content === 'string' && content.trim().length > 0
+})
+
 const isChapterCompleted = (chapterNumber: number) => {
   if (!props.project?.chapters) return false
   const chapter = props.project.chapters.find(ch => ch.chapter_number === chapterNumber)
@@ -335,13 +340,15 @@ const currentComponent = computed(() => {
     return ChapterGenerating // Use a generic "in-progress" component
   }
 
+  // 优先展示已同步到前端的正文，避免状态短暂滞后时必须手动刷新
+  if (hasSelectedChapterContent.value) {
+    return ChapterContent
+  }
+
   if (status === 'waiting_for_confirm' || status === 'evaluation_failed') {
     return VersionSelector
   }
 
-  if (selectedChapter.value?.content) {
-    return ChapterContent
-  }
   if (isChapterFailed(props.selectedChapterNumber)) {
     return ChapterFailed
   }
@@ -393,13 +400,13 @@ watch(
 
     // 需要轮询的场景：
     // 1) 生成/评审/选择中（状态推进）
-    // 2) 等待确认但版本列表还没同步（偶发后端延迟）
+    // 2) 等待确认但正文还没同步（含版本已到但正文未到的短暂窗口）
     // 3) 已成功但正文暂未同步（避免必须手动刷新）
     const needsPolling =
       status === 'generating' ||
       status === 'evaluating' ||
       status === 'selecting' ||
-      (status === 'waiting_for_confirm' && versionsCount === 0) ||
+      (status === 'waiting_for_confirm' && !hasContent) ||
       (status === 'successful' && !hasContent)
 
     if (needsPolling) {
@@ -439,7 +446,7 @@ const currentComponentProps = computed(() => {
     }
   }
 
-  if (status === 'waiting_for_confirm' || status === 'evaluation_failed') {
+  if ((status === 'waiting_for_confirm' || status === 'evaluation_failed') && !hasSelectedChapterContent.value) {
     return {
       selectedChapter: selectedChapter.value,
       chapterGenerationResult: props.chapterGenerationResult,
@@ -450,7 +457,7 @@ const currentComponentProps = computed(() => {
       isEvaluationFailed: isChapterEvaluationFailed(props.selectedChapterNumber)
     }
   }
-  if (selectedChapter.value?.content) {
+  if (hasSelectedChapterContent.value) {
     return { 
       selectedChapter: selectedChapter.value,
       projectId: props.project?.id

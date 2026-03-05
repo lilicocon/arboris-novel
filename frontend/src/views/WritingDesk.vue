@@ -80,7 +80,7 @@
     <WDVersionDetailModal
       :show="showVersionDetailModal"
       :detail-version-index="detailVersionIndex"
-      :version="availableVersions[detailVersionIndex]"
+      :version="availableVersions[detailVersionIndex] ?? null"
       :is-current="isCurrentVersion(detailVersionIndex)"
       @close="closeVersionDetail"
       @select-version="selectVersionFromDetail"
@@ -281,51 +281,73 @@ const hasChapterInProgress = (chapterNumber: number) => {
   return chapter && chapter.generation_status === 'waiting_for_confirm'
 }
 
-// 可用版本列表 (合并生成结果和已有版本)
-const availableVersions = computed(() => {
-  // 优先使用新生成的版本（对象数组格式）
-  if (chapterGenerationResult.value?.versions) {
-    console.log('使用生成结果版本:', chapterGenerationResult.value.versions)
-    return chapterGenerationResult.value.versions
+const extractVersionContent = (raw: unknown): string => {
+  if (typeof raw !== 'string') {
+    return ''
+  }
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    return ''
   }
 
-  // 使用章节已有的版本（字符串数组格式，需要转换为对象数组）
-  if (selectedChapter.value?.versions && Array.isArray(selectedChapter.value.versions)) {
-    console.log('原始章节版本 (字符串数组):', selectedChapter.value.versions)
+  const likelyJson = (
+    (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    || (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  )
+  if (!likelyJson) {
+    return raw
+  }
 
-    // 将字符串数组转换为ChapterVersion对象数组
-    const convertedVersions = selectedChapter.value.versions.map((versionString, index) => {
-      console.log(`版本 ${index} 原始字符串:`, versionString)
-
-      try {
-        // 解析JSON字符串
-        const versionObj = JSON.parse(versionString)
-        console.log(`版本 ${index} 解析后的对象:`, versionObj)
-
-        // 提取content字段作为实际内容
-        const actualContent = versionObj.content || versionString
-
-        console.log(`版本 ${index} 实际内容:`, actualContent.substring(0, 100) + '...')
-
-        return {
-          content: actualContent,
-          style: '标准' // 默认风格
-        }
-      } catch (error) {
-        // 如果JSON解析失败，直接使用原始字符串
-        console.log(`版本 ${index} JSON解析失败，使用原始字符串:`, error)
-        return {
-          content: versionString,
-          style: '标准'
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (parsed && typeof parsed === 'object') {
+      const record = parsed as Record<string, unknown>
+      for (const key of ['content', 'chapter_content', 'chapter_text', 'text', 'body', 'story']) {
+        const candidate = record[key]
+        if (typeof candidate === 'string' && candidate.trim()) {
+          return candidate
         }
       }
-    })
+    }
+  } catch {
+    // ignore parse errors, fallback to raw text
+  }
+  return raw
+}
 
-    console.log('转换后的版本对象:', convertedVersions)
-    return convertedVersions
+// 可用版本列表（来源优先级：生成结果 > 章节 versions > 章节 content 兜底）
+const availableVersions = computed<ChapterVersion[]>(() => {
+  if (Array.isArray(chapterGenerationResult.value?.versions) && chapterGenerationResult.value.versions.length > 0) {
+    return chapterGenerationResult.value.versions.filter((item) => Boolean(item?.content?.trim()))
   }
 
-  console.log('没有可用版本，selectedChapter:', selectedChapter.value)
+  const chapter = selectedChapter.value
+  if (!chapter) {
+    return []
+  }
+
+  if (Array.isArray(chapter.versions) && chapter.versions.length > 0) {
+    const converted = chapter.versions
+      .map((versionRaw) => {
+        const content = extractVersionContent(versionRaw)
+        if (!content.trim()) {
+          return null
+        }
+        return {
+          content,
+          style: '标准'
+        } as ChapterVersion
+      })
+      .filter((item): item is ChapterVersion => item !== null)
+    if (converted.length > 0) {
+      return converted
+    }
+  }
+
+  if (typeof chapter.content === 'string' && chapter.content.trim()) {
+    return [{ content: chapter.content, style: '标准' }]
+  }
+
   return []
 })
 
@@ -377,6 +399,9 @@ const fetchChapterStatus = async () => {
 
 // 显示版本详情
 const showVersionDetail = (versionIndex: number) => {
+  if (versionIndex < 0 || versionIndex >= availableVersions.value.length) {
+    return
+  }
   detailVersionIndex.value = versionIndex
   showVersionDetailModal.value = true
 }
@@ -445,12 +470,31 @@ const generateChapter = async (chapterNumber: number) => {
     }
 
     await novelStore.generateChapter(chapterNumber)
-    
-    // store 中的 project 已经被更新，所以我们不需要手动修改本地状态
-    // chapterGenerationResult 也不再需要，因为 availableVersions 会从更新后的 project.chapters 中获取数据
-    // showVersionSelector is now a computed property and will update automatically.
-    chapterGenerationResult.value = null 
-    selectedVersionIndex.value = 0
+    // 关键兜底：生成接口在极少数情况下可能返回旧快照，这里强制拉取当前章最新状态。
+    await novelStore.loadChapter(chapterNumber)
+
+    // store 中的 project 已经被更新，所以我们不需要手动修改本地状态。
+    // 单版本场景自动确认，直接进入正文视图。
+    const generatedChapter = project.value?.chapters.find(ch => ch.chapter_number === chapterNumber)
+    const generatedVersions = Array.isArray(generatedChapter?.versions) ? generatedChapter.versions : []
+    const validVersionCount = generatedVersions
+      .map((versionRaw) => extractVersionContent(versionRaw))
+      .filter((content) => Boolean(content.trim()))
+      .length
+
+    if (generatedChapter?.generation_status === 'waiting_for_confirm' && validVersionCount === 1) {
+      selectedVersionIndex.value = 0
+      await selectVersion(0, {
+        chapterNumber,
+        suppressSuccessToast: true,
+        skipAvailabilityCheck: true
+      })
+      globalAlert.showSuccess('唯一版本已自动确认，已进入正文', '生成成功')
+    } else {
+      // 非单版本场景保留版本选择流程
+      chapterGenerationResult.value = null
+      selectedVersionIndex.value = 0
+    }
   } catch (error) {
     console.error('生成章节失败:', error)
 
@@ -475,33 +519,44 @@ const regenerateChapter = async () => {
   }
 }
 
-const selectVersion = async (versionIndex: number) => {
-  if (selectedChapterNumber.value === null || !availableVersions.value?.[versionIndex]?.content) {
+const selectVersion = async (
+  versionIndex: number,
+  options: { chapterNumber?: number; suppressSuccessToast?: boolean; skipAvailabilityCheck?: boolean } = {}
+) => {
+  const targetChapterNumber = options.chapterNumber ?? selectedChapterNumber.value
+  if (targetChapterNumber === null) {
+    return
+  }
+  if (!options.skipAvailabilityCheck && !availableVersions.value?.[versionIndex]?.content) {
     return
   }
 
   try {
     // 在本地立即更新状态以反映UI
     if (project.value?.chapters) {
-      const chapter = project.value.chapters.find(ch => ch.chapter_number === selectedChapterNumber.value)
+      const chapter = project.value.chapters.find(ch => ch.chapter_number === targetChapterNumber)
       if (chapter) {
         chapter.generation_status = 'selecting'
       }
     }
 
     selectedVersionIndex.value = versionIndex
-    await novelStore.selectChapterVersion(selectedChapterNumber.value, versionIndex)
+    await novelStore.selectChapterVersion(targetChapterNumber, versionIndex)
+    // 兜底同步：避免后端响应中正文字段短暂滞后导致界面需手动刷新。
+    await novelStore.loadChapter(targetChapterNumber)
 
     // 状态更新将由 store 自动触发，本地无需手动更新
     // 轮询机制会处理状态变更，成功后会自动隐藏选择器
     // showVersionSelector.value = false
     chapterGenerationResult.value = null
-    globalAlert.showSuccess('版本已确认', '操作成功')
+    if (!options.suppressSuccessToast) {
+      globalAlert.showSuccess('版本已确认', '操作成功')
+    }
   } catch (error) {
     console.error('选择章节版本失败:', error)
     // 错误状态下恢复章节状态
     if (project.value?.chapters) {
-      const chapter = project.value.chapters.find(ch => ch.chapter_number === selectedChapterNumber.value)
+      const chapter = project.value.chapters.find(ch => ch.chapter_number === targetChapterNumber)
       if (chapter) {
         chapter.generation_status = 'waiting_for_confirm' // Or the previous state
       }
@@ -635,10 +690,8 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
-
 :global(body.m3-novel) {
-  --md-font-family: 'Manrope', 'Noto Sans SC', 'Noto Sans', 'PingFang SC', sans-serif;
+  --md-font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
   --md-primary: #2563eb;
   --md-primary-light: #4f7bf2;
   --md-primary-dark: #1d4ed8;

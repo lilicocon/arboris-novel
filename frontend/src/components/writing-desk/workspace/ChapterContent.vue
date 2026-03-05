@@ -237,6 +237,7 @@ import { computed, onUnmounted, ref } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { Chapter } from '@/api/novel'
 import { OptimizerAPI } from '@/api/novel'
+import { useNovelStore } from '@/stores/novel'
 
 interface Props {
   selectedChapter: Chapter
@@ -244,6 +245,7 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const novelStore = useNovelStore()
 
 defineEmits(['showVersionSelector'])
 
@@ -604,9 +606,9 @@ const applyOptimization = async () => {
     additionalNotes.value = ''
     optimizedContent.value = ''
     optimizeResultNotes.value = ''
-    
-    // 刷新页面以显示新内容
-    window.location.reload()
+
+    // 仅刷新当前章节数据，避免整页刷新导致路由重载和状态丢失。
+    await novelStore.loadChapter(props.selectedChapter.chapter_number)
   } catch (error: any) {
     console.error('应用优化失败:', error)
     globalAlert.showError(error.message || '应用优化失败，请稍后重试')

@@ -534,6 +534,7 @@ async def generate_chapter(
 
     chapter.real_summary = None
     chapter.selected_version_id = None
+    chapter.selected_version = None
     chapter.status = "generating"
     chapter.generation_started_at = datetime.now(CN_TIMEZONE)
     chapter.generation_progress = 3
@@ -1398,6 +1399,7 @@ async def edit_chapter_content(
         target_version.content = request.content
         if not chapter.selected_version_id:
             chapter.selected_version_id = target_version.id
+        chapter.selected_version = target_version
     else:
         target_version = ChapterVersion(
             chapter_id=chapter.id,
@@ -1407,6 +1409,7 @@ async def edit_chapter_content(
         session.add(target_version)
         await session.flush()
         chapter.selected_version_id = target_version.id
+        chapter.selected_version = target_version
     
     chapter.status = "successful"
     chapter.generation_progress = 100
@@ -1448,6 +1451,7 @@ async def edit_chapter_content_fast(
         target_version.content = request.content
         if not chapter.selected_version_id:
             chapter.selected_version_id = target_version.id
+        chapter.selected_version = target_version
     else:
         target_version = ChapterVersion(
             chapter_id=chapter.id,
@@ -1457,6 +1461,7 @@ async def edit_chapter_content_fast(
         session.add(target_version)
         await session.flush()
         chapter.selected_version_id = target_version.id
+        chapter.selected_version = target_version
 
     chapter.status = "successful"
     chapter.generation_progress = 100
@@ -1501,7 +1506,19 @@ async def edit_chapter_content_fast(
     title = outline.title if outline else f"第{request.chapter_number}章"
     summary = outline.summary if outline else ""
     real_summary = chapter.real_summary
-    content = chapter.selected_version.content if chapter.selected_version else None
+    selected_version = None
+    if chapter.selected_version_id and chapter.versions:
+        selected_version = next((v for v in chapter.versions if v.id == chapter.selected_version_id), None)
+    if (
+        selected_version is None
+        and chapter.selected_version
+        and (
+            chapter.selected_version_id is None
+            or chapter.selected_version.id == chapter.selected_version_id
+        )
+    ):
+        selected_version = chapter.selected_version
+    content = selected_version.content if selected_version else None
     versions = (
         [v.content for v in sorted(chapter.versions, key=lambda item: item.created_at)]
         if chapter.versions

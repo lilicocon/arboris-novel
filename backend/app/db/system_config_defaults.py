@@ -109,6 +109,11 @@ SYSTEM_CONFIG_DEFAULTS: list[SystemConfigDefault] = [
         description="每次生成章节的候选版本数量（支持 1~2）。",
     ),
     SystemConfigDefault(
+        key="updates.version_info_url",
+        value_getter=lambda config: _to_optional_str(config.version_info_url),
+        description="远程版本信息 JSON 地址，供 /api/updates/remote-version 优先读取。",
+    ),
+    SystemConfigDefault(
         key="embedding.provider",
         value_getter=lambda config: config.embedding_provider,
         description="嵌入模型提供方，支持 openai 或 ollama。",
