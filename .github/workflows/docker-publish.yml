@@ -48,6 +48,50 @@ jobs:
             fi
           fi
 
+          # 先从 Docker Hub 获取当前最新的语义化版本标签（X.Y.Z 或 vX.Y.Z）
+          docker_latest_version=""
+          docker_tags_api="https://hub.docker.com/v2/repositories/${IMAGE_REPO}/tags?page_size=100"
+          next_page="${docker_tags_api}"
+
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "警告: runner 未安装 jq，将回退到 Git tag/VERSION。"
+            next_page=""
+          fi
+
+          while [[ -n "${next_page}" ]]; do
+            if ! page_json="$(curl -fsSL --retry 3 --retry-delay 2 "${next_page}")"; then
+              echo "警告: 无法从 Docker Hub 获取标签，将回退到 Git tag/VERSION。"
+              docker_latest_version=""
+              break
+            fi
+
+            page_latest="$(
+              echo "${page_json}" \
+                | jq -r '.results[].name // empty' \
+                | grep -E '^(v)?[0-9]+\.[0-9]+\.[0-9]+$' \
+                | sed 's/^v//' \
+                | sort -V \
+                | tail -n 1 || true
+            )"
+
+            if [[ -n "${page_latest}" ]]; then
+              docker_latest_version="$(
+                printf '%s\n%s\n' "${docker_latest_version}" "${page_latest}" \
+                  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+                  | sort -V \
+                  | tail -n 1
+              )"
+            fi
+
+            next_page="$(echo "${page_json}" | jq -r '.next // empty')"
+          done
+
+          if [[ -n "${docker_latest_version}" ]]; then
+            echo "Docker Hub 最新版本: ${docker_latest_version}"
+          else
+            echo "Docker Hub 未找到可用语义化版本标签。"
+          fi
+
           git fetch --tags origin
 
           latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
@@ -56,7 +100,9 @@ jobs:
           fi
 
           base_version=""
-          if [[ -n "${latest_tag}" ]]; then
+          if [[ -n "${docker_latest_version}" ]]; then
+            base_version="${docker_latest_version}"
+          elif [[ -n "${latest_tag}" ]]; then
             base_version="${latest_tag#v}"
           elif [[ -f VERSION ]]; then
             base_version="$(cat VERSION | tr -d '\r\n' | xargs)"
