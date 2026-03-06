@@ -1,16 +1,16 @@
 {
-  "version": "0.1.9",
-  "git_tag": "v0.1.9",
+  "version": "0.1.10",
+  "git_tag": "v0.1.10",
   "image_repo": "woshidayingxiong77240/arboris-novel",
   "image_tags": [
-    "woshidayingxiong77240/arboris-novel:0.1.9",
+    "woshidayingxiong77240/arboris-novel:0.1.10",
     "woshidayingxiong77240/arboris-novel:latest"
   ],
-  "build_time_beijing": "2026-03-05 21:28:02 +08:00",
-  "build_time_iso_beijing": "2026-03-05T21:28:02+08:00",
+  "build_time_beijing": "2026-03-06 09:03:01 +08:00",
+  "build_time_iso_beijing": "2026-03-06T09:03:01+08:00",
   "timezone": "Asia/Shanghai",
   "repository": "2754026865/2arboris_novel",
-  "commit_sha": "e58456ce13b4a10c538178b559a8373fdccec5bd",
-  "run_id": "22719973312",
+  "commit_sha": "f50ad5ddab87f1fef430b7bcb5cad6710fde4a1c",
+  "run_id": "22744030491",
   "source": "github-actions"
 }
