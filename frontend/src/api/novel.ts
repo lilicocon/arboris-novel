@@ -113,6 +113,12 @@ export interface ChapterOutline {
   summary: string
 }
 
+export interface OutlineMissingRange {
+  start_chapter: number
+  end_chapter: number
+  count: number
+}
+
 export interface ChapterVersion {
   content: string
   style?: string
@@ -403,6 +409,33 @@ export class NovelAPI {
         start_chapter: startChapter,
         num_chapters: numChapters
       })
+    })
+  }
+
+  static async fillMissingChapterOutline(
+    projectId: string,
+    batchSize?: number
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/outline/fill-missing`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(typeof batchSize === 'number' ? { batch_size: batchSize } : {})
+      })
+    })
+  }
+
+  static async expandChapterOutline(
+    projectId: string,
+    payload: {
+      start_chapter?: number
+      end_chapter?: number
+      batch_size?: number
+      min_summary_length?: number
+    } = {}
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/outline/expand`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
     })
   }
 

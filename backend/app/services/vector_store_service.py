@@ -49,6 +49,8 @@ class RetrievedSummary:
 class VectorStoreService:
     """libsql 向量库操作工具，确保不同小说项目的数据隔离。"""
 
+    _distance_fallback_warned = False
+
     def __init__(self) -> None:
         if not settings.vector_store_enabled:
             logger.warning("未开启向量库配置，RAG 检索将被跳过。")
@@ -170,7 +172,7 @@ class VectorStoreService:
             )
         except Exception as exc:  # pragma: no cover - 查询异常时仅记录
             if "no such function: vector_distance_cosine" in str(exc).lower():
-                logger.warning("向量库缺少 vector_distance_cosine 函数，回退至应用层相似度计算。")
+                self._log_distance_fallback()
                 return await self._query_chunks_with_python_similarity(
                     project_id=project_id,
                     embedding=embedding,
@@ -231,7 +233,7 @@ class VectorStoreService:
             )
         except Exception as exc:  # pragma: no cover - 查询异常时仅记录
             if "no such function: vector_distance_cosine" in str(exc).lower():
-                logger.warning("向量库缺少 vector_distance_cosine 函数，回退至应用层相似度计算。")
+                self._log_distance_fallback()
                 return await self._query_summaries_with_python_similarity(
                     project_id=project_id,
                     embedding=embedding,
@@ -536,6 +538,14 @@ class VectorStoreService:
                 except Exception:  # pragma: no cover - 无法转换时跳过
                     continue
         return normalized
+
+    @classmethod
+    def _log_distance_fallback(cls) -> None:
+        if cls._distance_fallback_warned:
+            logger.debug("向量库继续使用应用层相似度计算。")
+            return
+        logger.warning("向量库缺少 vector_distance_cosine 函数，回退至应用层相似度计算。")
+        cls._distance_fallback_warned = True
 
 
 __all__ = [

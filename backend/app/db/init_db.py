@@ -183,6 +183,127 @@ async def _ensure_schema_updates() -> None:
                 bp_columns = {col["name"] for col in inspector.get_columns("novel_blueprints")}
                 if "chapter_length" not in bp_columns:
                     sync_conn.execute(text("ALTER TABLE novel_blueprints ADD COLUMN chapter_length INTEGER"))
+
+            if "character_states" in table_names:
+                cs_columns = {col["name"]: col for col in inspector.get_columns("character_states")}
+                id_col = cs_columns.get("id")
+                is_sqlite = str(sync_conn.engine.url.get_backend_name()) == "sqlite"
+                if is_sqlite and id_col and str(id_col.get("type", "")).upper().startswith("BIG"):
+                    sync_conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS _character_states_backup AS SELECT * FROM character_states"
+                    ))
+                    sync_conn.execute(text("DROP TABLE character_states"))
+                    sync_conn.execute(text(
+                        "CREATE TABLE character_states ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "project_id VARCHAR(255) NOT NULL, "
+                        "character_id INTEGER NOT NULL, "
+                        "character_name VARCHAR(255) NOT NULL, "
+                        "chapter_number INTEGER NOT NULL, "
+                        "location VARCHAR(255), "
+                        "location_detail TEXT, "
+                        "emotion VARCHAR(64), "
+                        "emotion_intensity INTEGER, "
+                        "emotion_reason TEXT, "
+                        "health_status VARCHAR(64), "
+                        "injuries TEXT, "
+                        "inventory TEXT, "
+                        "inventory_changes TEXT, "
+                        "relationship_changes TEXT, "
+                        "power_level VARCHAR(64), "
+                        "power_changes TEXT, "
+                        "known_secrets TEXT, "
+                        "new_knowledge TEXT, "
+                        "current_goals TEXT, "
+                        "goal_progress TEXT, "
+                        "extra TEXT, "
+                        "created_at DATETIME, "
+                        "updated_at DATETIME)"
+                    ))
+                    sync_conn.execute(text(
+                        "INSERT INTO character_states "
+                        "SELECT * FROM _character_states_backup"
+                    ))
+                    sync_conn.execute(text("DROP TABLE _character_states_backup"))
+                    for idx_sql in [
+                        "CREATE INDEX IF NOT EXISTS ix_character_states_project_id ON character_states(project_id)",
+                        "CREATE INDEX IF NOT EXISTS ix_character_states_character_id ON character_states(character_id)",
+                        "CREATE INDEX IF NOT EXISTS ix_character_states_chapter_number ON character_states(chapter_number)",
+                    ]:
+                        sync_conn.execute(text(idx_sql))
+                    logger.info("character_states.id 已从 BIGINT 修复为 INTEGER")
+
+            # 修复 timeline_events / causal_chains / story_time_trackers 的 BIGINT 主键
+            for table_name, columns_ddl in [
+                ("timeline_events", (
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "project_id VARCHAR(255) NOT NULL, "
+                    "chapter_number INTEGER NOT NULL, "
+                    "story_time VARCHAR(255), "
+                    "story_date VARCHAR(64), "
+                    "time_elapsed VARCHAR(128), "
+                    "event_type VARCHAR(64), "
+                    "event_title VARCHAR(255) NOT NULL, "
+                    "event_description TEXT, "
+                    "involved_characters TEXT, "
+                    "location VARCHAR(255), "
+                    "caused_by_event_id INTEGER, "
+                    "leads_to_event_ids TEXT, "
+                    "importance INTEGER DEFAULT 5, "
+                    "is_turning_point BOOLEAN DEFAULT 0, "
+                    "extra TEXT, "
+                    "created_at DATETIME"
+                )),
+                ("causal_chains", (
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "project_id VARCHAR(255) NOT NULL, "
+                    "cause_type VARCHAR(64), "
+                    "cause_description TEXT NOT NULL, "
+                    "cause_chapter INTEGER NOT NULL, "
+                    "effect_type VARCHAR(64), "
+                    "effect_description TEXT NOT NULL, "
+                    "effect_chapter INTEGER, "
+                    "involved_characters TEXT, "
+                    "cause_event_id INTEGER, "
+                    "effect_event_id INTEGER, "
+                    "status VARCHAR(32) DEFAULT 'pending', "
+                    "resolution_description TEXT, "
+                    "importance INTEGER DEFAULT 5, "
+                    "extra TEXT, "
+                    "created_at DATETIME, "
+                    "updated_at DATETIME"
+                )),
+                ("story_time_trackers", (
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "project_id VARCHAR(255) NOT NULL UNIQUE, "
+                    "time_system VARCHAR(64) DEFAULT 'modern', "
+                    "start_date VARCHAR(64), "
+                    "current_date VARCHAR(64), "
+                    "current_time VARCHAR(64), "
+                    "default_chapter_duration VARCHAR(64) DEFAULT '1 day', "
+                    "chapter_time_map TEXT, "
+                    "extra TEXT, "
+                    "created_at DATETIME, "
+                    "updated_at DATETIME"
+                )),
+            ]:
+                if table_name in table_names:
+                    cols = {col["name"]: col for col in inspector.get_columns(table_name)}
+                    id_col = cols.get("id")
+                    if is_sqlite and id_col and str(id_col.get("type", "")).upper().startswith("BIG"):
+                        backup = f"_{table_name}_backup"
+                        sync_conn.execute(text(
+                            f"CREATE TABLE IF NOT EXISTS {backup} AS SELECT * FROM {table_name}"
+                        ))
+                        sync_conn.execute(text(f"DROP TABLE {table_name}"))
+                        sync_conn.execute(text(
+                            f"CREATE TABLE {table_name} ({columns_ddl})"
+                        ))
+                        sync_conn.execute(text(
+                            f"INSERT INTO {table_name} SELECT * FROM {backup}"
+                        ))
+                        sync_conn.execute(text(f"DROP TABLE {backup}"))
+                        logger.info(f"{table_name}.id 已从 BIGINT 修复为 INTEGER")
         await conn.run_sync(_upgrade)
 
 

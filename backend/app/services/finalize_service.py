@@ -15,12 +15,15 @@ import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.project_memory import ProjectMemory, ChapterSnapshot
 from ..models.memory_layer import CharacterState
-from ..models.novel import Chapter, ChapterVersion, NovelProject
 from ..models.chapter_blueprint import ChapterBlueprint
+from ..models.novel import ChapterOutline
+from ..models.novel import BlueprintCharacter
+from .chapter_ingest_service import ChapterIngestionService
 from .llm_service import LLMService
 from .vector_store_service import VectorStoreService
 
@@ -145,7 +148,7 @@ class FinalizeService:
     
     def __init__(
         self,
-        db: Session,
+        db: AsyncSession,
         llm_service: LLMService,
         vector_store_service: Optional[VectorStoreService] = None
     ):
@@ -251,12 +254,12 @@ class FinalizeService:
             # 8. 更新章节蓝图状态
             await self._update_blueprint_status(project_id, chapter_number)
             
-            self.db.commit()
+            await self.db.commit()
             logger.info(f"定稿处理完成: project={project_id}, chapter={chapter_number}")
             
         except Exception as e:
             logger.error(f"定稿处理失败: {e}")
-            self.db.rollback()
+            await self.db.rollback()
             result["success"] = False
             result["error"] = str(e)
         
@@ -264,9 +267,10 @@ class FinalizeService:
     
     async def _get_or_create_project_memory(self, project_id: str) -> ProjectMemory:
         """获取或创建项目记忆"""
-        memory = self.db.query(ProjectMemory).filter(
-            ProjectMemory.project_id == project_id
-        ).first()
+        result = await self.db.execute(
+            select(ProjectMemory).where(ProjectMemory.project_id == project_id)
+        )
+        memory = result.scalars().first()
         
         if not memory:
             memory = ProjectMemory(
@@ -279,7 +283,7 @@ class FinalizeService:
                 }
             )
             self.db.add(memory)
-            self.db.flush()
+            await self.db.flush()
         
         return memory
     
@@ -310,9 +314,12 @@ class FinalizeService:
     async def _get_character_state_text(self, project_id: str) -> str:
         """获取角色状态文本"""
         # 获取最新的角色状态记录
-        states = self.db.query(CharacterState).filter(
-            CharacterState.project_id == project_id
-        ).order_by(CharacterState.chapter_number.desc()).all()
+        result = await self.db.execute(
+            select(CharacterState)
+            .where(CharacterState.project_id == project_id)
+            .order_by(CharacterState.chapter_number.desc())
+        )
+        states = list(result.scalars().all())
         
         if not states:
             return ""
@@ -376,9 +383,30 @@ class FinalizeService:
         # 解析状态文本并保存
         # 这里简化处理，实际可以做更精细的解析
         # 创建一个通用的状态记录
+        next_id_result = await self.db.execute(select(func.max(CharacterState.id)))
+        next_id = int(next_id_result.scalar() or 0) + 1
+        character_result = await self.db.execute(
+            select(BlueprintCharacter.id)
+            .where(BlueprintCharacter.project_id == project_id)
+            .order_by(BlueprintCharacter.position, BlueprintCharacter.id)
+            .limit(1)
+        )
+        fallback_character_id = int(character_result.scalar() or 0)
+        if fallback_character_id <= 0:
+            placeholder = BlueprintCharacter(
+                project_id=project_id,
+                name="__all__",
+                identity="系统占位角色",
+                position=9999,
+            )
+            self.db.add(placeholder)
+            await self.db.flush()
+            fallback_character_id = int(placeholder.id)
+
         state = CharacterState(
+            id=next_id,
             project_id=project_id,
-            character_id=0,  # 通用记录
+            character_id=fallback_character_id,
             character_name="__all__",
             chapter_number=chapter_number,
             extra={"raw_state_text": state_text}
@@ -432,13 +460,27 @@ class FinalizeService:
         """更新向量库"""
         if not self.vector_store_service:
             return
-        
+
         try:
-            # 将章节文本分块并存入向量库
-            await self.vector_store_service.add_chapter_to_store(
+            outline_result = await self.db.execute(
+                select(ChapterOutline).where(
+                    ChapterOutline.project_id == project_id,
+                    ChapterOutline.chapter_number == chapter_number,
+                )
+            )
+            outline = outline_result.scalars().first()
+            chapter_title = outline.title if outline and outline.title else f"第{chapter_number}章"
+            ingest_service = ChapterIngestionService(
+                llm_service=self.llm_service,
+                vector_store=self.vector_store_service,
+            )
+            await ingest_service.ingest_chapter(
                 project_id=project_id,
                 chapter_number=chapter_number,
-                content=chapter_text
+                title=chapter_title,
+                content=chapter_text,
+                summary=None,
+                user_id=0,
             )
         except Exception as e:
             logger.error(f"更新向量库失败: {e}")
@@ -491,10 +533,13 @@ class FinalizeService:
     
     async def _update_blueprint_status(self, project_id: str, chapter_number: int):
         """更新章节蓝图状态"""
-        blueprint = self.db.query(ChapterBlueprint).filter(
-            ChapterBlueprint.project_id == project_id,
-            ChapterBlueprint.chapter_number == chapter_number
-        ).first()
+        result = await self.db.execute(
+            select(ChapterBlueprint).where(
+                ChapterBlueprint.project_id == project_id,
+                ChapterBlueprint.chapter_number == chapter_number,
+            )
+        )
+        blueprint = result.scalars().first()
         
         if blueprint:
             blueprint.is_finalized = True
@@ -509,15 +554,22 @@ class FinalizeService:
         
         用于在生成章节时提供上下文参考。
         """
-        memory = self.db.query(ProjectMemory).filter(
-            ProjectMemory.project_id == project_id
-        ).first()
+        memory_result = await self.db.execute(
+            select(ProjectMemory).where(ProjectMemory.project_id == project_id)
+        )
+        memory = memory_result.scalars().first()
         
         # 获取最近的章节快照
-        recent_snapshots = self.db.query(ChapterSnapshot).filter(
-            ChapterSnapshot.project_id == project_id,
-            ChapterSnapshot.chapter_number < chapter_number
-        ).order_by(ChapterSnapshot.chapter_number.desc()).limit(3).all()
+        snapshot_result = await self.db.execute(
+            select(ChapterSnapshot)
+            .where(
+                ChapterSnapshot.project_id == project_id,
+                ChapterSnapshot.chapter_number < chapter_number,
+            )
+            .order_by(ChapterSnapshot.chapter_number.desc())
+            .limit(3)
+        )
+        recent_snapshots = list(snapshot_result.scalars().all())
         
         return {
             "global_summary": memory.global_summary if memory else None,

@@ -8,6 +8,23 @@
       </div>
       <div v-if="editable" class="flex items-center gap-2">
         <button
+          v-if="missingCount > 0"
+          type="button"
+          class="flex items-center gap-1 px-3 py-2 text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
+          :disabled="aiBusy"
+          @click="$emit('fill-missing')"
+        >
+          一键补齐缺失
+        </button>
+        <button
+          type="button"
+          class="flex items-center gap-1 px-3 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
+          :disabled="aiBusy"
+          @click="$emit('expand-ai')"
+        >
+          AI 扩写大纲
+        </button>
+        <button
           type="button"
           class="flex items-center gap-1 px-3 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg"
           @click="$emit('add')"
@@ -29,6 +46,15 @@
           编辑大纲
         </button>
       </div>
+    </div>
+
+    <div
+      v-if="missingCount > 0"
+      class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+    >
+      检测到章节大纲存在缺口，共缺失 {{ missingCount }} 章。
+      缺失区间：
+      {{ missingRanges.map((item) => `第${item.start_chapter}-${item.end_chapter}章`).join('、') }}
     </div>
 
     <ol class="relative border-l border-slate-200 ml-3 space-y-8">
@@ -54,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineEmits, defineProps } from 'vue'
+import { computed } from 'vue'
 
 interface OutlineItem {
   chapter_number: number
@@ -62,20 +88,39 @@ interface OutlineItem {
   summary: string
 }
 
-const props = defineProps<{
+interface MissingRange {
+  start_chapter: number
+  end_chapter: number
+  count: number
+}
+
+const props = withDefaults(defineProps<{
   outline: OutlineItem[]
   editable?: boolean
-}>()
+  missingRanges?: MissingRange[]
+  missingCount?: number
+  aiBusy?: boolean
+}>(), {
+  editable: false,
+  missingRanges: () => [],
+  missingCount: 0,
+  aiBusy: false
+})
 
 const emit = defineEmits<{
   (e: 'edit', payload: { field: string; title: string; value: any }): void
   (e: 'add'): void
+  (e: 'fill-missing'): void
+  (e: 'expand-ai'): void
 }>()
 
 const emitEdit = (field: string, title: string, value: any) => {
   if (!props.editable) return
   emit('edit', { field, title, value })
 }
+
+const missingRanges = computed(() => props.missingRanges)
+const missingCount = computed(() => props.missingCount)
 </script>
 
 <script lang="ts">

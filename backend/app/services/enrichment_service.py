@@ -127,7 +127,7 @@ class EnrichmentService:
         chapter_text: str,
         target_word_count: int,
         user_id: int,
-        threshold: float = 0.7
+        threshold: float = 0.8
     ) -> Optional[EnrichmentResult]:
         """
         检查字数并在需要时进行扩写
@@ -136,7 +136,7 @@ class EnrichmentService:
             chapter_text: 章节内容
             target_word_count: 目标字数
             user_id: 用户ID
-            threshold: 触发扩写的阈值（默认70%）
+            threshold: 触发扩写的阈值（默认80%）
             
         Returns:
             如果进行了扩写返回EnrichmentResult，否则返回None
@@ -195,7 +195,7 @@ class EnrichmentService:
         for i in range(max_iterations):
             current_count = self._count_words(current_text)
             
-            if current_count >= target_word_count * 0.9:  # 达到90%即可
+            if current_count >= target_word_count * 0.8:  # 达到80%即可
                 break
             
             logger.info(f"扩写迭代 {i+1}: {current_count}/{target_word_count}")
@@ -204,7 +204,7 @@ class EnrichmentService:
                 chapter_text=current_text,
                 target_word_count=target_word_count,
                 user_id=user_id,
-                threshold=0.9  # 使用更高的阈值进行迭代
+                threshold=0.8
             )
             
             if result:

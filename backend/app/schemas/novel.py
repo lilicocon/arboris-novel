@@ -220,6 +220,17 @@ class GenerateOutlineRequest(BaseModel):
     num_chapters: int
 
 
+class FillMissingOutlineRequest(BaseModel):
+    batch_size: Optional[int] = None
+
+
+class ExpandOutlineRequest(BaseModel):
+    start_chapter: Optional[int] = None
+    end_chapter: Optional[int] = None
+    batch_size: Optional[int] = None
+    min_summary_length: Optional[int] = None
+
+
 class BlueprintPatch(BaseModel):
     one_sentence_summary: Optional[str] = None
     full_synopsis: Optional[str] = None

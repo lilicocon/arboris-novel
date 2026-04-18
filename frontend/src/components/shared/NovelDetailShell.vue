@@ -116,6 +116,35 @@
       <!-- Main Content Area -->
       <div class="flex-1 lg:ml-80 min-h-0 flex flex-col h-full">
         <div class="flex-1 min-h-0 h-full p-4 sm:p-6 lg:p-8 flex flex-col overflow-hidden box-border">
+          <div
+            v-if="!props.isAdmin && outlineMissingCount > 0"
+            class="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div class="min-w-0">
+              <div class="text-sm font-semibold text-amber-900">
+                检测到章节大纲存在缺失，共缺失 {{ outlineMissingCount }} 章
+              </div>
+              <div class="text-xs text-amber-800 mt-1 break-words">
+                缺失区间：{{ outlineMissingRanges.map((item) => `第${item.start_chapter}-${item.end_chapter}章`).join('、') }}
+              </div>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+              <button
+                class="md-btn md-btn-filled md-ripple"
+                :disabled="outlineAiBusy"
+                @click="fillMissingOutline"
+              >
+                一键补齐缺失
+              </button>
+              <button
+                class="md-btn md-btn-outlined md-ripple"
+                :disabled="outlineAiBusy"
+                @click="expandOutline"
+              >
+                AI 扩写大纲
+              </button>
+            </div>
+          </div>
           <div class="flex-1 flex flex-col min-h-0 h-full">
             <!-- Material 3 Card -->
             <div 
@@ -150,9 +179,12 @@
                 v-else
                 :is="currentComponent"
                 v-bind="componentProps"
+                :key="`${activeSection}:${sectionRenderTick}`"
                 :class="componentContainerClass"
                 @edit="handleSectionEdit"
                 @add="startAddChapter"
+                @fill-missing="fillMissingOutline"
+                @expand-ai="expandOutline"
               />
             </div>
           </div>
@@ -238,7 +270,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import { NovelAPI } from '@/api/novel'
 import { AdminAPI } from '@/api/admin'
-import type { NovelProject, NovelSectionResponse, NovelSectionType, AllSectionType } from '@/api/novel'
+import type {
+  NovelProject,
+  NovelSectionResponse,
+  NovelSectionType,
+  AllSectionType,
+  OutlineMissingRange
+} from '@/api/novel'
 import { formatDateTime } from '@/utils/date'
 import BlueprintEditModal from '@/components/BlueprintEditModal.vue'
 import OverviewSection from '@/components/novel-detail/OverviewSection.vue'
@@ -373,6 +411,8 @@ const isAddChapterModalOpen = ref(false)
 const newChapterTitle = ref('')
 const newChapterSummary = ref('')
 const originalBodyOverflow = ref('')
+const outlineAiBusy = ref(false)
+const sectionRenderTick = ref(0)
 
 const novel = computed(() => !props.isAdmin ? novelStore.currentProject as NovelProject | null : null)
 
@@ -468,6 +508,16 @@ const goToWritingDesk = async () => {
 const currentComponent = computed(() => sectionComponents[activeSection.value])
 const isSectionLoading = computed(() => sectionLoading[activeSection.value])
 const currentError = computed(() => sectionError[activeSection.value])
+const outlineMissingRanges = computed<OutlineMissingRange[]>(() => {
+  const data = sectionData.chapter_outline
+  return Array.isArray(data?.missing_ranges) ? data.missing_ranges : []
+})
+const outlineMissingCount = computed(() => {
+  const data = sectionData.chapter_outline
+  return typeof data?.missing_count === 'number'
+    ? data.missing_count
+    : outlineMissingRanges.value.reduce((sum, item) => sum + item.count, 0)
+})
 
 const componentProps = computed(() => {
   const data = sectionData[activeSection.value]
@@ -483,7 +533,13 @@ const componentProps = computed(() => {
     case 'relationships':
       return { data: data || null, editable }
     case 'chapter_outline':
-      return { outline: data?.chapter_outline || [], editable }
+      return {
+        outline: data?.chapter_outline || [],
+        editable,
+        missingRanges: outlineMissingRanges.value,
+        missingCount: outlineMissingCount.value,
+        aiBusy: outlineAiBusy.value
+      }
     case 'chapters':
       return { chapters: data?.chapters || [], isAdmin: props.isAdmin }
     default:
@@ -582,6 +638,46 @@ const saveNewChapter = async () => {
   }
 }
 
+const refreshOutlineRelatedSections = async () => {
+  await Promise.all([
+    loadSection('overview', true),
+    loadSection('world_setting', true),
+    loadSection('characters', true),
+    loadSection('chapter_outline', true),
+    loadSection('chapters', true),
+    loadSection('relationships', true)
+  ])
+  sectionRenderTick.value += 1
+}
+
+const fillMissingOutline = async () => {
+  if (props.isAdmin || outlineAiBusy.value || outlineMissingCount.value <= 0) return
+  outlineAiBusy.value = true
+  try {
+    const updatedProject = await NovelAPI.fillMissingChapterOutline(projectId)
+    novelStore.setCurrentProject(updatedProject)
+    await refreshOutlineRelatedSections()
+  } catch (error) {
+    console.error('补齐缺失大纲失败:', error)
+  } finally {
+    outlineAiBusy.value = false
+  }
+}
+
+const expandOutline = async () => {
+  if (props.isAdmin || outlineAiBusy.value) return
+  outlineAiBusy.value = true
+  try {
+    const updatedProject = await NovelAPI.expandChapterOutline(projectId)
+    novelStore.setCurrentProject(updatedProject)
+    await refreshOutlineRelatedSections()
+  } catch (error) {
+    console.error('扩写大纲失败:', error)
+  } finally {
+    outlineAiBusy.value = false
+  }
+}
+
 onMounted(async () => {
   if (typeof window !== 'undefined') {
     window.addEventListener('resize', handleResize)
@@ -594,6 +690,7 @@ onMounted(async () => {
   // 只加载必要的 section 数据，不预加载完整项目
   await loadSection('overview', true)
   loadSection('world_setting')
+  loadSection('chapter_outline')
 })
 
 onBeforeUnmount(() => {

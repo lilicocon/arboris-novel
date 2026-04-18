@@ -1,19 +1,21 @@
 # AIMETA P=写作流水线编排_统一生成入口|R=上下文汇聚_生成_审查_优化|NR=不含API路由|E=PipelineOrchestrator|X=internal|A=编排器|D=fastapi,sqlalchemy|S=db,net|RD=./README.ai
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
+from ..db.session import AsyncSessionLocal
 from ..models.novel import Chapter
 from ..models.project_memory import ProjectMemory
 from ..repositories.system_config_repository import SystemConfigRepository
@@ -278,19 +280,20 @@ class PipelineOrchestrator:
         version_count = config.version_count
         version_style_hints = self._resolve_style_hints(enhanced_context, version_count)
 
-        versions: List[Dict[str, Any]] = []
+        version_factories: List[Callable[[], Awaitable[Dict[str, Any]]]] = []
         for idx in range(version_count):
             style_hint = version_style_hints[idx] if idx < len(version_style_hints) else None
-            chapter.generation_progress = 55 + int((idx / max(version_count, 1)) * 25)
-            chapter.generation_step = "draft_generation"
-            chapter.generation_step_index = 4
-            await self.session.commit()
-            versions.append(
-                await self._generate_single_version(
-                    index=idx,
+
+            def build_factory(
+                *,
+                index: int = idx,
+                resolved_style_hint: Optional[str] = style_hint,
+            ) -> Callable[[], Awaitable[Dict[str, Any]]]:
+                return lambda: self._generate_single_version_with_isolated_session(
+                    index=index,
                     prompt_input=prompt_input,
                     writer_prompt=writer_prompt,
-                    style_hint=style_hint,
+                    style_hint=resolved_style_hint,
                     project_id=project_id,
                     chapter_number=chapter_number,
                     outline_title=outline_title,
@@ -306,11 +309,12 @@ class PipelineOrchestrator:
                     max_tokens=max_tokens,
                     target_word_count=target_word_count,
                 )
-            )
-            chapter.generation_progress = 55 + int(((idx + 1) / max(version_count, 1)) * 25)
-            chapter.generation_step = "draft_generation"
-            chapter.generation_step_index = 4
-            await self.session.commit()
+            version_factories.append(build_factory())
+
+        versions = await self._generate_versions_in_parallel(
+            chapter=chapter,
+            version_factories=version_factories,
+        )
 
         chapter.generation_progress = 86
         chapter.generation_step = "quality_review"
@@ -530,7 +534,7 @@ class PipelineOrchestrator:
         chapter_content: str,
         target_word_count: int,
         configured_enrichment: Optional[bool],
-        auto_threshold: float = 0.7,
+        auto_threshold: float = 0.8,
     ) -> bool:
         if configured_enrichment is True:
             return True
@@ -905,6 +909,45 @@ class PipelineOrchestrator:
         if not chapter_mission:
             return None
         return chapter_mission.get("pov") or chapter_mission.get("pov_character")
+
+    async def _generate_versions_in_parallel(
+        self,
+        *,
+        chapter: Chapter,
+        version_factories: List[Callable[[], Awaitable[Dict[str, Any]]]],
+    ) -> List[Dict[str, Any]]:
+        if not version_factories:
+            return []
+
+        tasks = [asyncio.create_task(factory()) for factory in version_factories]
+        versions: List[Optional[Dict[str, Any]]] = [None] * len(tasks)
+        completed = 0
+
+        try:
+            for task in asyncio.as_completed(tasks):
+                version = await task
+                versions[version["index"]] = version
+                completed += 1
+                chapter.generation_progress = 55 + int((completed / len(tasks)) * 25)
+                chapter.generation_step = "draft_generation"
+                chapter.generation_step_index = 4
+                await self.session.commit()
+        except Exception:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        return [item for item in versions if item is not None]
+
+    async def _generate_single_version_with_isolated_session(
+        self,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        async with AsyncSessionLocal() as task_session:
+            task_orchestrator = PipelineOrchestrator(task_session)
+            return await task_orchestrator._generate_single_version(**kwargs)
 
     async def _generate_single_version(
         self,
@@ -1324,7 +1367,7 @@ class PipelineOrchestrator:
         *,
         user_id: int,
         target_word_count: int = 3000,
-        target_ratio: float = 0.9,
+        target_ratio: float = 0.8,
         max_rounds: int = 5,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
         service = EnrichmentService(self.session, self.llm_service)

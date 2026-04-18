@@ -25,6 +25,11 @@ class Settings(BaseSettings):
         env="LOGGING_LEVEL",
         description="应用日志级别",
     )
+    sqlalchemy_echo: bool = Field(
+        default=False,
+        env="SQLALCHEMY_ECHO",
+        description="是否输出 SQLAlchemy 的 SQL 明细日志",
+    )
     version_info_url: Optional[AnyUrl] = Field(
         default="https://raw.githubusercontent.com/2754026865/2arboris_novel/refs/heads/main/release-metadata/version-info.json",
         env="VERSION_INFO_URL",

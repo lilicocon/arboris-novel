@@ -37,9 +37,11 @@ from ...schemas.novel import (
     AdvancedGenerateResponse,
     DeleteChapterRequest,
     EditChapterRequest,
+    ExpandOutlineRequest,
     EvaluateChapterRequest,
     FinalizeChapterRequest,
     FinalizeChapterResponse,
+    FillMissingOutlineRequest,
     GenerateChapterRequest,
     GenerateOutlineRequest,
     NovelProject as NovelProjectSchema,
@@ -60,6 +62,11 @@ from ...services.writer_context_builder import WriterContextBuilder
 from ...services.chapter_guardrails import ChapterGuardrails
 from ...services.ai_review_service import AIReviewService
 from ...services.finalize_service import FinalizeService
+from ...services.outline_generation_service import (
+    DEFAULT_EXPAND_SUMMARY_MIN_LENGTH,
+    DEFAULT_OUTLINE_BATCH_SIZE,
+    OutlineGenerationService,
+)
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 from ...repositories.system_config_repository import SystemConfigRepository
 from ...services.pipeline_orchestrator import PipelineOrchestrator
@@ -662,8 +669,7 @@ async def _finalize_chapter_async(
             except RuntimeError as exc:
                 logger.warning("向量库初始化失败，跳过定稿写入: %s", exc)
 
-        sync_session = getattr(session, "sync_session", session)
-        finalize_service = FinalizeService(sync_session, llm_service, vector_store)
+        finalize_service = FinalizeService(session, llm_service, vector_store)
         finalize_result = await finalize_service.finalize_chapter(
             project_id=project_id,
             chapter_number=chapter_number,
@@ -817,8 +823,7 @@ async def finalize_chapter(
         except RuntimeError as exc:
             logger.warning("向量库初始化失败，跳过定稿写入: %s", exc)
 
-    sync_session = getattr(session, "sync_session", session)
-    finalize_service = FinalizeService(sync_session, LLMService(session), vector_store)
+    finalize_service = FinalizeService(session, LLMService(session), vector_store)
     finalize_result = await finalize_service.finalize_chapter(
         project_id=request.project_id,
         chapter_number=chapter_number,
@@ -1776,59 +1781,90 @@ async def generate_chapters_outline(
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
     llm_service = LLMService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
 
-    project = await novel_service.ensure_project_owner(project_id, current_user.id)
-    
-    # 获取蓝图信息
-    project_schema = await novel_service._serialize_project(project)
-    blueprint_text = json.dumps(project_schema.blueprint.model_dump(), ensure_ascii=False, indent=2)
-    
-    # 获取已有的章节大纲
-    existing_outlines = [
-        f"第{o.chapter_number}章 - {o.title}: {o.summary}"
-        for o in sorted(project.outlines, key=lambda x: x.chapter_number)
-    ]
-    existing_outlines_text = "\n".join(existing_outlines) if existing_outlines else "暂无"
-
-    outline_prompt = await prompt_service.get_prompt("outline_generation")
-    if not outline_prompt:
-        raise HTTPException(status_code=500, detail="未配置大纲生成提示词")
-
-    prompt_input = f"""
-[世界蓝图]
-{blueprint_text}
-
-[已有章节大纲]
-{existing_outlines_text}
-
-[生成任务]
-请从第 {request.start_chapter} 章开始，续写接下来的 {request.num_chapters} 章的大纲。
-要求返回 JSON 格式，包含一个 chapters 数组，每个元素包含 chapter_number, title, summary。
-"""
-
-    response = await llm_service.get_llm_response(
-        system_prompt=outline_prompt,
-        conversation_history=[{"role": "user", "content": prompt_input}],
-        temperature=0.7,
-        user_id=current_user.id,
+    outline_service = OutlineGenerationService(
+        session=session,
+        prompt_service=prompt_service,
+        llm_service=llm_service,
+        novel_service=novel_service,
     )
-    
-    cleaned = remove_think_tags(response)
-    normalized = unwrap_markdown_json(cleaned)
     try:
-        data = json.loads(normalized)
-        new_outlines = data.get("chapters", [])
-        for item in new_outlines:
-            await novel_service.update_or_create_outline(
-                project_id, 
-                item["chapter_number"], 
-                item["title"], 
-                item["summary"]
-            )
-        await session.commit()
+        await outline_service.generate_and_persist_range(
+            project_id=project_id,
+            user_id=current_user.id,
+            start_chapter=request.start_chapter,
+            num_chapters=request.num_chapters,
+            batch_size=DEFAULT_OUTLINE_BATCH_SIZE,
+        )
     except Exception as exc:
-        logger.exception("生成大纲解析失败: %s", exc)
+        logger.exception("生成大纲失败: %s", exc)
         raise HTTPException(status_code=500, detail=f"大纲生成失败: {str(exc)}")
+
+    return await _load_project_schema(novel_service, project_id, current_user.id)
+
+
+@router.post("/novels/{project_id}/chapters/outline/fill-missing", response_model=NovelProjectSchema)
+async def fill_missing_chapters_outline(
+    project_id: str,
+    request: FillMissingOutlineRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+    outline_service = OutlineGenerationService(
+        session=session,
+        prompt_service=prompt_service,
+        llm_service=llm_service,
+        novel_service=novel_service,
+    )
+    try:
+        await outline_service.fill_missing_outlines(
+            project_id=project_id,
+            user_id=current_user.id,
+            batch_size=request.batch_size or DEFAULT_OUTLINE_BATCH_SIZE,
+        )
+    except Exception as exc:
+        logger.exception("补齐缺失大纲失败: %s", exc)
+        raise HTTPException(status_code=500, detail=f"补齐缺失大纲失败: {str(exc)}")
+
+    return await _load_project_schema(novel_service, project_id, current_user.id)
+
+
+@router.post("/novels/{project_id}/chapters/outline/expand", response_model=NovelProjectSchema)
+async def expand_chapters_outline(
+    project_id: str,
+    request: ExpandOutlineRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+    outline_service = OutlineGenerationService(
+        session=session,
+        prompt_service=prompt_service,
+        llm_service=llm_service,
+        novel_service=novel_service,
+    )
+    try:
+        await outline_service.expand_existing_outlines(
+            project_id=project_id,
+            user_id=current_user.id,
+            start_chapter=request.start_chapter,
+            end_chapter=request.end_chapter,
+            batch_size=request.batch_size or DEFAULT_OUTLINE_BATCH_SIZE,
+            min_summary_length=request.min_summary_length or DEFAULT_EXPAND_SUMMARY_MIN_LENGTH,
+        )
+    except Exception as exc:
+        logger.exception("扩写章节大纲失败: %s", exc)
+        raise HTTPException(status_code=500, detail=f"扩写章节大纲失败: {str(exc)}")
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 

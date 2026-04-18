@@ -1,47 +1,15 @@
 <claude-mem-context>
 # Memory Context
 
-# [arboris-novel] recent context, 2026-04-19 2:14am GMT+8
+# [arboris-novel] recent context, 2026-04-19 3:30am GMT+8
 
 Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision
 Format: ID TIME TYPE TITLE
 Fetch details: get_observations([IDs]) | Search: mem-search skill
 
-Stats: 50 obs (19,036t read) | 0t work
+Stats: 50 obs (16,406t read) | 92,156t work | 82% savings
 
 ### Apr 19, 2026
-241 1:35a 🔴 实现智能属性刷新机制修复MissingGreenlet异常
-242 " 🔴 MissingGreenlet异常修复验证成功
-243 1:38a 🔵 Logging cleanup planning initiated
-244 " 🔵 Writing-plans skill loaded for logging cleanup task
-245 " 🔵 Comprehensive logging audit performed across backend and frontend
-246 1:39a 🔵 SQL logging controlled by debug flag in session configuration
-247 " 🔵 Specific unnecessary logging patterns identified in frontend components
-248 " 🔵 Backend services contain verbose routine operational logging while frontend has excessive debugging console statements
-249 1:40a 🔵 Logging analysis completed - identified three categories of removable log noise
-250 1:42a 🔵 Chapter generation pipeline contains routine progress logging at each enhancement step
-251 1:44a ✅ Chapter enrichment disabled in frontend to reduce backend logging noise
-252 1:45a ⚖️ Refactoring enrichment from frontend toggle to backend automatic detection
-253 " 🔵 Mapped enrichment feature flow across full stack from frontend to backend service
-254 " 🔵 Backend testing infrastructure limited to phase4 integration tests; pytest not installed in venv
-255 " 🔵 Identified all enable_enrichment flag usage locations for refactoring scope
-256 " 🔵 PipelineConfig dataclass defines enrichment as one of 13 optional pipeline stages
-257 1:46a 🔵 PipelineOrchestrator generate_chapter method structure and JSON utilities mapped
-258 " 🟣 Test suite created for automatic enrichment detection logic with TDD approach
-259 " 🔵 TDD test suite execution confirms expected failures before implementation
-260 " 🔵 Configuration resolution mechanism allows frontend flow_config to override PipelineConfig defaults
-261 1:47a 🟣 Implemented backend automatic enrichment detection with three-state configuration
-262 " 🟣 All automatic enrichment unit tests passed confirming TDD green phase
-263 1:48a 🔵 Verification confirms frontend no longer controls enrichment; backend now owns automatic detection
-264 " 🔵 Four-step enrichment refactoring completed with all tests passing
-265 1:56a 🔵 Chapter generation pipeline performance bottlenecks identified in code analysis
-266 " 🔵 Ripgrep search confirms 7 database commits and serial execution in chapter generation pipeline
-267 " 🔵 Frontend polling every 3 seconds and serial RAG operations contribute to performance bottleneck
-268 1:57a 🔵 Chapter version selection blocks on synchronous vectorization, delaying user response
-269 " 🔵 Chapter finalize endpoint performs synchronous finalization and vector update operations
-270 " 🔵 Chapter vector ingestion performs embedding generation sequentially in for loop
-271 " 🔵 Vector store configuration checked conditionally across 10+ code locations
-272 2:04a 🔵 Novel Generation Project Requirements Identified
 273 2:05a 🔵 Novel Generation Project Structure Mapped
 274 " 🔵 Current Chapter Generation Flow Mapped
 275 2:06a 🔵 Writing Desk UI Structure and Bulk Operation Pattern Identified
@@ -60,4 +28,38 @@ Stats: 50 obs (19,036t read) | 0t work
 288 2:14a 🔵 Chapter word count settings not respected - enrichment retry logic investigation
 289 " 🔴 Implemented iterative enrichment retry logic for chapter word count targets
 290 " 🔴 Iterative enrichment retry logic verified - all tests passing
+291 2:15a 🔵 Auto-enrichment system for chapter expansion
+292 " 🟣 Enrichment retry loop with output sanitization
+293 " 🔵 Continuous generation with version selection planned
+294 " 🔵 PipelineOrchestrator chapter generation flow
+295 " 🔵 Version count resolution with multi-source fallback
+296 " 🔵 Frontend chapter generation with target word count resolution
+297 " 🔵 Chapter finalization system with synchronous and asynchronous modes
+298 " 🔵 FinalizeService performs eight-step post-generation processing
+299 2:16a 🔵 Character state tracking with hierarchical tree structure
+300 " 🔵 Plot arcs JSON tracking with status-based hook management
+301 2:17a 🔵 Chapter schema serialization with conditional content loading
+302 " 🔵 Chapter schema version selection with dual fallback resolution
+303 " 🔵 NovelRepository eager loading strategy with populate_existing option
+304 " 🟣 Auto version selection tests with target word count priority
+305 " 🟣 Novel TXT export tests with chapter formatting
+306 " 🟣 Version selection algorithm tests with three-tier fallback logic
+307 " 🟣 Novel TXT export functionality with reader catalog formatting
+308 " 🔵 Test execution blocked by missing httpx dependency
+309 2:18a 🔵 WritingDesk component architecture with chapter generation flow
+310 " 🔵 Chapter generation workflow with optimistic UI updates and sequential validation
+311 " 🔵 Version selection and chapter editing workflows with status management
+312 " 🔵 AI review version annotation with metadata attachment
+313 " 🟣 Auto version selection with target word count priority algorithm
+314 " 🔵 Patch application failure due to missing expected code context
+315 2:19a 🟣 Auto version selection method implemented in PipelineOrchestrator
+316 " 🟣 Auto version selection method successfully applied to PipelineOrchestrator
+317 " 🟣 Auto version selection integrated into chapter generation flow
+318 2:24a 🟣 Novel TXT export function implemented in NovelService
+319 2:25a 🟣 Finalize error handling with automatic rollback on failure
+320 " 🟣 Batch chapter generation with automatic retry and stop control
+321 " 🟣 Plan completed: continuous generation with auto version selection and export
+322 2:34a ✅ SQLAlchemy logging cleanup planned
+
+Access 92k tokens of past work via get_observations([IDs]) or mem-search skill.
 </claude-mem-context>

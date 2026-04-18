@@ -6,6 +6,58 @@
 
 ---
 
+## 0. 二次复核快照（基于 2026-04-19 当前工作区）
+
+> 说明：本文件最初版本基于第一次全量扫描。当前仓库已经继续演进，这一节用于覆盖已经过期的判断；后续执行请优先参考本节和第五部分的状态说明。
+
+### 0.1 已落地
+
+1. **Prompt seed 行为已升级。**
+   - `backend/app/db/init_db.py::_ensure_default_prompts` 不再只是“缺失时插入”，同名 prompt 的文件内容变化后也会自动更新数据库记录。
+2. **输入侧 token 预算已有初版。**
+   - `backend/app/services/context_budgeter.py` 已存在，并在 `PipelineOrchestrator._build_prompt_sections()` 之后接入。
+   - `backend/requirements.txt` 已加入 `tiktoken>=0.7.0`。
+3. **第一轮 prompt 对齐已完成大半。**
+   - `writing_v2.md` 已补 section 输入清单和信任优先级。
+   - `optimize_dialogue/environment/psychology/rhythm.md` 已按 `original_content + additional_notes` 对齐。
+   - 多个 JSON prompt 已补“单个合法 JSON 对象 / 不要代码围栏 / 不要 <think> / 不要前后缀”的输出纪律。
+   - `outline_generation.md` 已改成 `macro_beat + phase_label`，`chapter_plan.md` 的 `scene_list` 示例也已扩成 3 个场景。
+   - `concept.md` / `screenwriting.md` 的 jailbreak 文案已替换为分级声明。
+4. **章节目标字数已经打通。**
+   - `novel_blueprints.chapter_length` 已落库，`NovelService`、写作工作台、概览页都已接入。
+5. **多版本草稿已改成并行生成。**
+   - `PipelineOrchestrator` 现在通过 `_generate_versions_in_parallel()`，并用 `AsyncSessionLocal` 隔离 session 生成多版本。
+6. **大纲链路已经拆成独立服务。**
+   - 新增 `OutlineGenerationService`，支持批量生成、补齐缺失区间、扩写过短摘要。
+   - `writer.py` 已新增 `/outline/fill-missing` 和 `/outline/expand` 两个入口，前端也有缺口提示和触发按钮。
+7. **FinalizeService 已切到 async session 语义。**
+   - `writer.py` 不再把 `sync_session` 传给 `FinalizeService`；`FinalizeService` 内部查询也已改成 async 风格。
+8. **测试基础设施不再是 0。**
+   - 当前至少已有 `backend/tests/test_pipeline_orchestrator.py`、`backend/tests/test_outline_generation_service.py`、`backend/tests/test_finalize_service.py`、`backend/tests/test_novel_txt_export.py`。
+
+### 0.2 部分落地
+
+1. **失败梯度重试只完成第一层。**
+   - 现状：`PipelineOrchestrator._generate_with_gradient_retry()` 只有“同模型 + temperature 上调”的两次尝试。
+   - 还没做：按 section 缩上下文、fallback 模型、分场景兜底、版本级降级。
+2. **LLM role 路由只有接口，没有真正分流。**
+   - `LLMConfigService.get_config_for_role()` 已存在，但现在仍然直接返回同一份配置。
+3. **Enrichment 阈值已从 70% 提到 80%。**
+   - 这能减少无意义扩写，但本质上仍是整章后处理，不是按 `scene_list` 分段写。
+
+### 0.3 仍未开始或尚未落地
+
+1. `content_rating` 还没有进入数据模型、API、前端表单和 provider 路由；现在只体现在 prompt 文案里。
+2. `SceneWiseWriter` 还不存在，10k 字级章节依然是一口气生成整章。
+3. 多 query RAG、rerank、按卷 namespace、卷级长期记忆、`WorldStateService` 这些长篇能力还没进入代码。
+4. Prompt 版本化、Prompt 指纹缓存、单 section 续跑也还没开始。
+
+### 0.4 执行建议
+
+后续计划不要再把 `ContextBudgeter`、第一轮 prompt 对齐、章节目标字数、并行草稿生成、大纲补齐/扩写、Finalize async 化当成“待做项”；这些都应该转成“已完成基础版，继续增强”的状态。
+
+---
+
 ## 目录
 
 - 第一部分 整体代码结构与调用链
@@ -28,8 +80,8 @@
 
 Arboris 是 FastAPI + Vue 单体工程，AI 写作流水线集中在 `backend/app/services/`。Prompt 模板是纯文本库（`backend/prompts/*.md`），与业务层的耦合点只有两个：
 
-1. **启动时一次性 seed**：`app/db/init_db.py::_ensure_default_prompts` 扫描 `backend/prompts/*.md`，把 `<文件名>` 作为 `name`、整段内容作为 `content` 写入 `prompts` 表，**只在库里没有同名记录时写入**。
-   - 含义：线上直接改 `.md` 文件不会生效；必须走管理员后台改 DB，或写一次性迁移脚本强刷。
+1. **启动时 seed + 同步更新**：`app/db/init_db.py::_ensure_default_prompts` 扫描 `backend/prompts/*.md`，把 `<文件名>` 作为 `name`、整段内容作为 `content` 写入 `prompts` 表；当同名 prompt 的文件内容变化时，会自动更新数据库记录。
+   - 含义：当前本地/自管部署里，直接改 `.md` 文件再启动即可同步到 DB；如果线上后台已经人工改过 DB，还要留意“文件覆盖 DB”这件事。
 2. **运行时通过 `PromptService.get_prompt(name)` 取**：带本地内存缓存，按 `name` 命中。
 
 ### 1.2 核心执行链（对应 CLAUDE.md 的三层架构）
@@ -57,6 +109,8 @@ outline_generation          -> 大纲（章节列表 + 1234 叙事节拍）
 | `chapter_context_service.py` + `vector_store_service.py` | RAG：章节 chunk + summary 双层检索（libsql） |
 | `memory_layer_service.py` | 角色状态、时间线、因果链、故事时间跟踪 |
 | `enrichment_service.py` | 字数不足时补足 |
+| `outline_generation_service.py` | 批量生成章节大纲、补齐缺失区间、扩写过短摘要 |
+| `finalize_service.py` | 章节定稿后的摘要/状态/快照/向量库闭环 |
 | `writer_persona_service.py` | 作家声纹（当前 prompt 死档，persona 字符串由服务生成） |
 | `foreshadowing_service.py` / `foreshadowing_tracker_service.py` | 伏笔管理 |
 | `constitution_service.py` / `six_dimension_review_service.py` / `ai_review_service.py` | 多层评审 |
@@ -95,6 +149,22 @@ outline_generation          -> 大纲（章节列表 + 1234 叙事节拍）
 | `evaluation.md` | `writer.py` 路由（多版本评估） | 无 | 与 `editor_review` 职责重叠 |
 | `writer_persona.md` | **无任何代码调用（死档）** | 2 个 | runtime 走 `WriterPersonaService` 自生成字符串 |
 | `character_dna_guide.md` | **无任何代码调用（死档）** | 无 | 产品文档残留 |
+
+### 2.1.1 二次复核结论（覆盖第一次扫描）
+
+以下问题在当前工作区里已经不再是主阻塞：
+
+1. `writing_v2.md` 的 section 输入清单已经补齐。
+2. `optimize_*` prompt 与 `_run_optimizer` 的 `additional_notes` 传参已经对齐。
+3. 多个关键 JSON prompt 已统一补上输出纪律。
+4. `outline_generation.md` 与 `chapter_plan.md` 的 `macro_beat / scene_list` 示例已经调整。
+
+当前还需要继续追的 prompt 问题主要剩下：
+
+1. 占位符没有统一声明，也没有加载时校验。
+2. `editor_review.md` / `evaluation.md` 职责仍然重叠。
+3. `writer_persona.md` / `character_dna_guide.md` 仍是死档。
+4. `PromptService` 还没有 frontmatter、版本化、枚举动态注入这些工程化能力。
 
 ### 2.2 共性问题（优先级最高）
 
@@ -261,14 +331,28 @@ outline_generation          -> 大纲（章节列表 + 1234 叙事节拍）
 
 ## 第四部分 长上下文与大规模连载健壮性评估
 
+### 4.0 二次复核后的状态修正
+
+第一次扫描里“没有输入 token 预算”和“不会计 token”这两条已经过期。当前代码已经有：
+
+1. `ContextBudgeter.fit()`：按 section 进行 hard limit + priority 压缩/丢弃。
+2. `tiktoken`：优先使用 `cl100k_base`，并保留字符数兜底估算。
+
+但这还只是基础版，离计划里的目标还有差距：
+
+1. budget 还是写死在代码里，没有按模型 context window 动态调。
+2. 关键 section 被压缩后的质量没有专门评测。
+3. 失败时不会自动“缩掉次要 section 再试”。
+4. 章节生成虽然已并行出多版本，但仍然是“一次性整章”，没有分 scene。
+
 ### 4.1 体检结论
 
 骨架是对的——已有分层上下文、分层生成、伏笔/记忆/RAG/Enrichment。
 
 **致命缺口（10k 字章 + 长篇场景下一定会炸）：**
 
-1. **只有输出 token 预算，没有输入 token 预算。** `_build_prompt_sections` 无 token 预算分配器、无按优先级裁剪、无按模型 context window 自适应。
-2. **不会计 token。** 全项目无 `tiktoken` / `transformers`。中文一字 1~2 token，JSON/英文混杂后估算误差上限 40%，够把 128k 切穿。
+1. **输入 token 预算已有初版，但还不够动态。** `_build_prompt_sections` 之后已经接入 `ContextBudgeter`，不过 budget 还是静态值，且没有按模型窗口实时调节。
+2. **会计 token，但还没形成完整预算体系。** 当前已有 `tiktoken` 和 fallback 估算；还缺少预算命中率、裁剪效果、模型差异这些回归数据。
 3. **Blueprint 没做分卷/压缩。** 无论第 3 章还是第 300 章，都注入当前 POV 可见的全量角色/世界/势力。长篇会膨胀到几千字，每章重复付出。
 4. **RAG 单 query、无 rerank、无分卷 namespace。** 长篇会召回大量低相关 chunk。
 5. **章节正文一次性生成。** 哪怕给 `max_tokens=20000`，大多数服务单次输出会被提前切断（GPT-4o mini 默认 16k 输出、不少服务 8k 封顶、DeepSeek 稳态 4-6k）。没有"分场景生成—拼接—校对"流水线。
@@ -418,8 +502,8 @@ outline_generation          -> 大纲（章节列表 + 1234 叙事节拍）
 
 ### P0（一周内可完成，现在问题最大）
 
-1. 写 `ContextBudgeter`：按 section 分预算、按优先级裁剪、用 `tiktoken` 真实计数。挂在 `_build_prompt_sections` 之后。
-2. 拆 LLM profile：`writer / reviewer / optimizer / summarizer` 四挡，`LLMConfigService` 支持多 profile，各处按 profile 取。
+1. `ContextBudgeter` 基础版已完成，下一步改成**按模型窗口动态预算 + 失败时主动缩上下文再试**。
+2. 拆 LLM profile：`writer / reviewer / optimizer / summarizer` 四挡，`LLMConfigService` 目前只有 `get_config_for_role()` 空壳，需要真正分流。
 3. 分级路由：加 `content_rating` 字段 + `ContentRoutingService`（集中管理"分级 → profile"映射）。
 4. Prompt 改动（第三部分 P0）：
    - 把 `optimize_*` 输入说明改成 `{original_content, additional_notes}`。
@@ -429,7 +513,13 @@ outline_generation          -> 大纲（章节列表 + 1234 叙事节拍）
    - `writing_v2` 补齐输入清单 + 信任优先级。
    - 删除或降级死档 prompt。
    - `concept.md` / `screenwriting.md` 去 jailbreak，改为分级声明。
+   - 上面前 5 条在当前工作区已完成，剩余主项是死档 prompt 清理和后续工程化。
 5. 失败梯度重试（temp → section → 模型 → 分场景 → 版本兜底）。
+   - 当前只完成了第一档 `temperature` 重试。
+6. 新增的已完成项：
+   - `OutlineGenerationService` 已落地并接入前后端。
+   - `FinalizeService` 已适配 async session。
+   - `backend/tests/` 已补基础回归用例。
 
 ### P1（2-3 周）
 
@@ -607,7 +697,7 @@ Priority 1-2 不可丢；3-4 先压后丢；5-6 最先丢。
 - [ ] 管理员后台确认 DB 里的 content 已被刷新（或跑一次性迁移脚本）。
 
 **代码改动前：**
-- [ ] `tiktoken` 依赖加入 `requirements.txt`。
+- [x] `tiktoken` 依赖加入 `requirements.txt`。
 - [ ] `content_rating` 字段的 migration 写好（`backend/db/migrations/`）。
 - [ ] LLM profile 的配置可以通过环境变量覆盖（便于不同部署环境切换）。
 - [ ] 分级路由有降级策略（mature profile 配置缺失时降级到 safe）。
@@ -630,11 +720,11 @@ Priority 1-2 不可丢；3-4 先压后丢；5-6 最先丢。
 | 文件 | 行数 | 调用点 | 占位符 | 输出类型 | 状态 |
 |---|---|---|---|---|---|
 | `writing.md` | 48 | `pipeline_orchestrator._generate_single_version`（兜底） | 无 | 文本 | 建议降级为 fallback |
-| `writing_v2.md` | 70 | `pipeline_orchestrator._generate_single_version`（主力） | 无 | 文本 | **需补输入清单 + 自检** |
-| `chapter_plan.md` | 145 | `pipeline_orchestrator`（chapter mission） | 无 | JSON | **需修示例** |
-| `outline_generation.md` | 171 | 大纲生成流程 | 无 | JSON | **需统一 macro_beat** |
-| `concept.md` | 63 | `novels.py::_concept` 路由 | 无 | 对话 + 文本 | **需去 jailbreak** |
-| `screenwriting.md` | 96 | `novels.py::_screenwriting` 路由 | 无 | JSON | **需去 jailbreak + 拆分幕** |
+| `writing_v2.md` | 70 | `pipeline_orchestrator._generate_single_version`（主力） | 无 | 文本 | **输入清单已补；仍缺自检清单** |
+| `chapter_plan.md` | 145 | `pipeline_orchestrator`（chapter mission） | 无 | JSON | **示例已修；仍可继续补默认值/硬校验** |
+| `outline_generation.md` | 171 | `OutlineGenerationService` / 大纲生成流程 | 无 | JSON | **macro_beat 已统一；仍需评估长批次稳定性** |
+| `concept.md` | 63 | `novels.py::_concept` 路由 | 无 | 对话 + 文本 | **jailbreak 已移除；content_rating 仍未接代码** |
+| `screenwriting.md` | 96 | `novels.py::_screenwriting` 路由 | 无 | JSON | **jailbreak 已移除；仍建议拆成分幕生成** |
 | `editor_review.md` | 54 | `AIReviewService.review_versions` | 无 | JSON | 与 evaluation 重叠 |
 | `evaluation.md` | 113 | `writer.py` 多版本评估路由 | 无 | JSON | 建议合并 editor_review |
 | `six_dimension_review.md` | 144 | `SixDimensionReviewService` | 7 个 | JSON | 与 constitution 重叠 |
@@ -642,10 +732,10 @@ Priority 1-2 不可丢；3-4 先压后丢；5-6 最先丢。
 | `foreshadowing_reminder.md` | 85 | `ForeshadowingTrackerService` | 4 个 | JSON | **需约束 id 来源** |
 | `faction_context.md` | 52 | `FactionService` | 3 个 | 文本 | 正常 |
 | `rewrite_guardrails.md` | 45 | `pipeline_orchestrator._rewrite_with_guardrails` | 无 | 文本 | **需扩违规类型** |
-| `optimize_dialogue.md` | 83 | `_run_optimizer[dialogue]` | 无 | JSON | **输入错配** |
-| `optimize_environment.md` | 89 | `_run_optimizer[environment]` | 无 | JSON | **输入错配** |
-| `optimize_psychology.md` | 132 | `_run_optimizer[psychology]` | 无 | JSON | **输入错配** |
-| `optimize_rhythm.md` | 133 | `_run_optimizer[rhythm]` | 无 | JSON | 输入勉强匹配 |
+| `optimize_dialogue.md` | 83 | `_run_optimizer[dialogue]` | 无 | JSON | **已按 additional_notes 对齐；仍缺差分输出** |
+| `optimize_environment.md` | 89 | `_run_optimizer[environment]` | 无 | JSON | **已按 additional_notes 对齐；仍缺差分输出** |
+| `optimize_psychology.md` | 132 | `_run_optimizer[psychology]` | 无 | JSON | **已按 additional_notes 对齐；仍缺差分输出** |
+| `optimize_rhythm.md` | 133 | `_run_optimizer[rhythm]` | 无 | JSON | **已补输出纪律；仍缺差分输出** |
 | `extraction.md` | 28 | `LLMService`（章节摘要） | 无 | 结构化 Markdown | 正常 |
 | `import_analysis.md` | 73 | 导入旧小说 | 无 | JSON | 建议枚举动态注入 |
 | `writer_persona.md` | 91 | **无代码引用（死档）** | 2 个 | 文本 | **需挂钩或删除** |
@@ -655,7 +745,7 @@ Priority 1-2 不可丢；3-4 先压后丢；5-6 最先丢。
 
 ## 结语
 
-当前系统工程脚手架是对的，但关键缺口在**输入 token 预算 + 分场景生成 + 模型 profile + 内容分级路由**。做这四件事就能从"3000 字 demo"级跳到"10000 字稳态连载"级。
+当前系统工程脚手架是对的，但二次复核之后，关键缺口已经收敛成 **动态 token 预算 + 分场景生成 + 真正的模型 profile 分流 + 内容分级路由**。这四件做完，当前系统才算真正从"3000 字 demo"往"10000 字稳态连载"迈过去。
 
 - 味道不会丢：味道本来就不是 jailbreak 给的，而是 `writing_v2` 硬约束 + `writer_persona` + `chapter_plan` 给的。需要做的是把 jailbreak 句子删掉、把 `writer_persona` 真接进生成链路、把评审 prompt 按 `content_rating` 分支。
 - 18+ 能稳定写的前提是**路由层解决**，不是提示词花招。准备 1-2 个允许 explicit 的 provider/自部署模型，orchestrator 按项目分级路由即可；prompt 保持克制，只声明分级。
@@ -837,4 +927,3 @@ Step 7  最后才删除 concept.md / screenwriting.md 的 jailbreak 段落
 - 可能被用于真实犯罪的操作指南（毒品合成、武器制造等）。
 
 这些不是"尺度问题"而是平台级合规问题，即使作者主动请求也要拒绝。建议在 `ContentRoutingService` 之前加一道轻量级的 `ContentPolicyGuard`，对章节大纲和导演脚本做预检查；预检查失败的章节不进入任何 profile 生成，直接返回作者侧报错。
-

@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -60,7 +61,17 @@ class PipelineOrchestratorAutoEnrichmentTest(unittest.TestCase):
             )
         )
 
-    def test_auto_mode_skips_enrichment_when_draft_is_close_to_target(self) -> None:
+    def test_auto_mode_runs_enrichment_when_draft_is_below_eighty_percent_of_target(self) -> None:
+        draft = "甲" * 7900
+        self.assertTrue(
+            PipelineOrchestrator._should_run_enrichment(
+                chapter_content=draft,
+                target_word_count=10000,
+                configured_enrichment=None,
+            )
+        )
+
+    def test_auto_mode_skips_enrichment_when_draft_reaches_eighty_percent_of_target(self) -> None:
         draft = "甲" * 8000
         self.assertFalse(
             PipelineOrchestrator._should_run_enrichment(
@@ -150,6 +161,40 @@ class PipelineOrchestratorEnrichmentExecutionTest(unittest.IsolatedAsyncioTestCa
         self.assertEqual("乙" * 9200, content)
         self.assertIsNotNone(report)
         self.assertEqual(2, fake_service.check_and_enrich.await_count)
+
+
+class PipelineOrchestratorParallelVersionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_versions_in_parallel_starts_all_tasks_before_waiting(self) -> None:
+        orchestrator = object.__new__(PipelineOrchestrator)
+        orchestrator.session = type("Session", (), {"commit": AsyncMock()})()
+        chapter = type(
+            "Chapter",
+            (),
+            {"generation_progress": 55, "generation_step": "draft_generation", "generation_step_index": 4},
+        )()
+
+        started = 0
+        all_started = asyncio.Event()
+
+        async def version_job(index: int) -> dict:
+            nonlocal started
+            started += 1
+            if started == 2:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=0.2)
+            return {"index": index, "content": f"正文{index}", "metadata": {}}
+
+        def factory(index: int):
+            return lambda: version_job(index)
+
+        versions = await PipelineOrchestrator._generate_versions_in_parallel(
+            orchestrator,
+            chapter=chapter,
+            version_factories=[factory(0), factory(1)],
+        )
+
+        self.assertEqual(["正文0", "正文1"], [item["content"] for item in versions])
+        self.assertEqual(2, orchestrator.session.commit.await_count)
 
 
 if __name__ == "__main__":

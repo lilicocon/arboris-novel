@@ -96,6 +96,28 @@ def build_confirmed_chapters_txt(chapters: Iterable[Dict[str, Any]]) -> str:
 
     return "\n\n\n".join(sections)
 
+
+def _detect_missing_ranges(chapter_numbers: Iterable[int]) -> List[Dict[str, int]]:
+    numbers = sorted({int(num) for num in chapter_numbers if int(num) > 0})
+    if len(numbers) < 2:
+        return []
+
+    missing_ranges: List[Dict[str, int]] = []
+    previous = numbers[0]
+    for current in numbers[1:]:
+        if current - previous > 1:
+            start_chapter = previous + 1
+            end_chapter = current - 1
+            missing_ranges.append(
+                {
+                    "start_chapter": start_chapter,
+                    "end_chapter": end_chapter,
+                    "count": end_chapter - start_chapter + 1,
+                }
+            )
+        previous = current
+    return missing_ranges
+
 from fastapi import HTTPException, status
 from sqlalchemy import delete, func, inspect, select, update
 from sqlalchemy.orm import selectinload
@@ -827,8 +849,18 @@ class NovelService:
                 "relationships": blueprint.relationships,
             }
         elif section == NovelSectionType.CHAPTER_OUTLINE:
+            outline_payload = [outline.model_dump() for outline in blueprint.chapter_outline]
+            missing_ranges = _detect_missing_ranges(
+                item["chapter_number"] for item in outline_payload
+            )
             data = {
-                "chapter_outline": [outline.model_dump() for outline in blueprint.chapter_outline],
+                "chapter_outline": outline_payload,
+                "missing_ranges": missing_ranges,
+                "missing_count": sum(item["count"] for item in missing_ranges),
+                "max_chapter_number": max(
+                    (item["chapter_number"] for item in outline_payload),
+                    default=0,
+                ),
             }
         elif section == NovelSectionType.CHAPTERS:
             outlines_map = {outline.chapter_number: outline for outline in project.outlines}

@@ -6,13 +6,16 @@
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import (
-    Column, Integer, BigInteger, String, Text, JSON, 
+    Column, Integer, BigInteger, String, Text, JSON,
     ForeignKey, DateTime, Boolean, Float, Enum
 )
 from sqlalchemy.orm import relationship
 import enum
 
 from ..db.base import Base
+from ..core.config import settings
+
+_AutoInt = Integer if settings.db_provider == "sqlite" else BigInteger
 
 
 class CharacterStateType(str, enum.Enum):
@@ -36,9 +39,9 @@ class CharacterState(Base):
     """
     __tablename__ = "character_states"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(_AutoInt, primary_key=True, autoincrement=True)
     project_id = Column(String(255), ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    character_id = Column(BigInteger, ForeignKey("blueprint_characters.id", ondelete="CASCADE"), nullable=False, index=True)
+    character_id = Column(_AutoInt, nullable=False, index=True)
     character_name = Column(String(255), nullable=False)  # 冗余存储，方便查询
     
     # 状态快照（章节结束时）
@@ -85,33 +88,33 @@ class CharacterState(Base):
 class TimelineEvent(Base):
     """
     时间线事件
-    
+
     追踪故事内的时间流逝和关键事件。
     """
     __tablename__ = "timeline_events"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(_AutoInt, primary_key=True, autoincrement=True)
     project_id = Column(String(255), ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    
+
     # 时间信息
     chapter_number = Column(Integer, nullable=False, index=True)
     story_time = Column(String(255))  # 故事内时间（如"第三天早上"）
     story_date = Column(String(64))  # 故事内日期（如"2024-01-15"）
     time_elapsed = Column(String(128))  # 距离上一事件的时间
-    
+
     # 事件信息
     event_type = Column(String(64))  # major/minor/background
     event_title = Column(String(255), nullable=False)
     event_description = Column(Text)
-    
+
     # 关联信息
     involved_characters = Column(JSON)  # 涉及角色
     location = Column(String(255))  # 发生地点
-    
+
     # 因果关系
-    caused_by_event_id = Column(BigInteger, ForeignKey("timeline_events.id", ondelete="SET NULL"))
+    caused_by_event_id = Column(_AutoInt, ForeignKey("timeline_events.id", ondelete="SET NULL"))
     leads_to_event_ids = Column(JSON)  # 导致的后续事件
-    
+
     # 元数据
     importance = Column(Integer, default=5)  # 重要性 1-10
     is_turning_point = Column(Boolean, default=False)  # 是否为转折点
@@ -122,32 +125,32 @@ class TimelineEvent(Base):
 class CausalChain(Base):
     """
     因果链
-    
+
     追踪事件之间的因果关系，确保逻辑自洽。
     """
     __tablename__ = "causal_chains"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(_AutoInt, primary_key=True, autoincrement=True)
     project_id = Column(String(255), ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    
+
     # 因果关系
     cause_type = Column(String(64))  # event/action/decision/external
     cause_description = Column(Text, nullable=False)
     cause_chapter = Column(Integer, nullable=False)
-    
+
     effect_type = Column(String(64))  # event/state_change/relationship_change
     effect_description = Column(Text, nullable=False)
     effect_chapter = Column(Integer)  # 可能尚未发生
-    
+
     # 关联信息
     involved_characters = Column(JSON)
-    cause_event_id = Column(BigInteger, ForeignKey("timeline_events.id", ondelete="SET NULL"))
-    effect_event_id = Column(BigInteger, ForeignKey("timeline_events.id", ondelete="SET NULL"))
-    
+    cause_event_id = Column(_AutoInt, ForeignKey("timeline_events.id", ondelete="SET NULL"))
+    effect_event_id = Column(_AutoInt, ForeignKey("timeline_events.id", ondelete="SET NULL"))
+
     # 状态
     status = Column(String(32), default="pending")  # pending/resolved/abandoned
     resolution_description = Column(Text)
-    
+
     # 元数据
     importance = Column(Integer, default=5)  # 重要性 1-10
     extra = Column(JSON)
@@ -158,12 +161,12 @@ class CausalChain(Base):
 class StoryTimeTracker(Base):
     """
     故事时间追踪器
-    
+
     追踪整体的故事时间流逝。
     """
     __tablename__ = "story_time_trackers"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(_AutoInt, primary_key=True, autoincrement=True)
     project_id = Column(String(255), ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False, unique=True)
     
     # 时间设定
