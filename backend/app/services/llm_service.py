@@ -11,6 +11,7 @@ from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalSer
 from ..core.config import settings
 from ..repositories.llm_config_repository import LLMConfigRepository
 from ..repositories.system_config_repository import SystemConfigRepository
+from ..services.llm_config_service import resolve_llm_override
 from ..services.prompt_service import PromptService
 from ..services.usage_service import UsageService
 from ..utils.llm_tool import ChatMessage, LLMClient
@@ -40,6 +41,8 @@ class LLMService:
         *,
         temperature: float = 0.7,
         user_id: Optional[int] = None,
+        role: str = "writer",
+        content_rating: Optional[str] = None,
         timeout: float = 300.0,
         response_format: Optional[str] = "json_object",
         max_tokens: Optional[int] = None,
@@ -50,6 +53,8 @@ class LLMService:
             messages,
             temperature=temperature,
             user_id=user_id,
+            role=role,
+            content_rating=content_rating,
             timeout=timeout,
             response_format=response_format,
             max_tokens=max_tokens,
@@ -63,6 +68,8 @@ class LLMService:
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         user_id: Optional[int] = None,
+        role: str = "writer",
+        content_rating: Optional[str] = None,
         timeout: float = 300.0,
         max_tokens: Optional[int] = None,
         response_format: Optional[str] = None,
@@ -74,6 +81,8 @@ class LLMService:
             conversation_history=[{"role": "user", "content": prompt}],
             temperature=temperature,
             user_id=user_id,
+            role=role,
+            content_rating=content_rating,
             timeout=timeout,
             response_format=response_format,
             max_tokens=max_tokens,
@@ -86,6 +95,8 @@ class LLMService:
         *,
         temperature: float = 0.2,
         user_id: Optional[int] = None,
+        role: str = "summarizer",
+        content_rating: Optional[str] = None,
         timeout: float = 180.0,
         system_prompt: Optional[str] = None,
     ) -> str:
@@ -99,7 +110,14 @@ class LLMService:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": chapter_content},
         ]
-        return await self._stream_and_collect(messages, temperature=temperature, user_id=user_id, timeout=timeout)
+        return await self._stream_and_collect(
+            messages,
+            temperature=temperature,
+            user_id=user_id,
+            role=role,
+            content_rating=content_rating,
+            timeout=timeout,
+        )
 
     async def _stream_and_collect(
         self,
@@ -107,12 +125,14 @@ class LLMService:
         *,
         temperature: float,
         user_id: Optional[int],
+        role: str,
+        content_rating: Optional[str],
         timeout: float,
         response_format: Optional[str] = None,
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
     ) -> str:
-        config = await self._resolve_llm_config(user_id)
+        config = await self._resolve_llm_config(user_id, role=role, content_rating=content_rating)
         client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
 
         chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
@@ -228,36 +248,63 @@ class LLMService:
         )
         return full_response
 
-    async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Optional[str]]:
-        return await self._resolve_llm_config_with_policy(user_id, require_api_key=True)
+    async def _resolve_llm_config(
+        self,
+        user_id: Optional[int],
+        *,
+        role: str = "writer",
+        content_rating: Optional[str] = None,
+    ) -> Dict[str, Optional[str]]:
+        return await self._resolve_llm_config_with_policy(
+            user_id,
+            require_api_key=True,
+            role=role,
+            content_rating=content_rating,
+        )
 
     async def _resolve_llm_config_with_policy(
         self,
         user_id: Optional[int],
         *,
         require_api_key: bool,
+        role: str = "writer",
+        content_rating: Optional[str] = None,
     ) -> Dict[str, Optional[str]]:
+        base_config: Dict[str, Optional[str]]
         if user_id:
             config = await self.llm_repo.get_by_user(user_id)
             if config and (config.llm_provider_api_key or not require_api_key):
-                return {
+                base_config = {
                     "api_key": config.llm_provider_api_key,
                     "base_url": config.llm_provider_url,
                     "model": config.llm_provider_model,
                 }
+            else:
+                api_key = await self._get_config_value("llm.api_key")
+                base_url = await self._get_config_value("llm.base_url")
+                model = await self._get_config_value("llm.model")
+                base_config = {"api_key": api_key, "base_url": base_url, "model": model}
+        else:
+            api_key = await self._get_config_value("llm.api_key")
+            base_url = await self._get_config_value("llm.base_url")
+            model = await self._get_config_value("llm.model")
+            base_config = {"api_key": api_key, "base_url": base_url, "model": model}
 
-        api_key = await self._get_config_value("llm.api_key")
-        base_url = await self._get_config_value("llm.base_url")
-        model = await self._get_config_value("llm.model")
+        overrides = resolve_llm_override(role=role, content_rating=content_rating)
+        config_values = {
+            "api_key": overrides["api_key"] or base_config.get("api_key"),
+            "base_url": overrides["base_url"] or base_config.get("base_url"),
+            "model": overrides["model"] or base_config.get("model"),
+        }
 
-        if require_api_key and not api_key:
+        if require_api_key and not config_values["api_key"]:
             logger.error("未配置默认 LLM API Key，且用户 %s 未设置自定义 API Key", user_id)
             raise HTTPException(
                 status_code=500,
                 detail="未配置默认 LLM API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key"
             )
 
-        return {"api_key": api_key, "base_url": base_url, "model": model}
+        return config_values
 
     @staticmethod
     def _normalize_ollama_host(host: Optional[str]) -> Optional[str]:

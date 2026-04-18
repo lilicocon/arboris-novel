@@ -15,6 +15,41 @@ from ..schemas.llm_config import LLMConfigCreate, LLMConfigRead
 
 logger = logging.getLogger(__name__)
 
+_ROLE_OVERRIDE_ATTRS = {
+    "reviewer": ("reviewer_llm_api_key", "reviewer_llm_base_url", "reviewer_llm_model_name"),
+    "optimizer": ("optimizer_llm_api_key", "optimizer_llm_base_url", "optimizer_llm_model_name"),
+    "summarizer": ("summarizer_llm_api_key", "summarizer_llm_base_url", "summarizer_llm_model_name"),
+}
+
+_CONTENT_RATING_OVERRIDE_ATTRS = {
+    "mature": ("mature_llm_api_key", "mature_llm_base_url", "mature_llm_model_name"),
+    "explicit": ("explicit_llm_api_key", "explicit_llm_base_url", "explicit_llm_model_name"),
+}
+
+
+def resolve_llm_override(role: str = "writer", content_rating: Optional[str] = None) -> dict[str, Optional[str]]:
+    normalized_role = (role or "writer").strip().lower()
+    normalized_rating = (content_rating or "safe").strip().lower()
+
+    attr_names = None
+    if normalized_role == "writer":
+        attr_names = _CONTENT_RATING_OVERRIDE_ATTRS.get(normalized_rating)
+    else:
+        attr_names = _ROLE_OVERRIDE_ATTRS.get(normalized_role)
+
+    if not attr_names:
+        return {"api_key": None, "base_url": None, "model": None}
+
+    api_key_attr, base_url_attr, model_attr = attr_names
+    api_key = getattr(settings, api_key_attr, None)
+    base_url = getattr(settings, base_url_attr, None)
+    model = getattr(settings, model_attr, None)
+    return {
+        "api_key": api_key or None,
+        "base_url": str(base_url) if base_url else None,
+        "model": model or None,
+    }
+
 
 class LLMConfigService:
     """用户自定义 LLM 配置服务。"""
@@ -142,17 +177,21 @@ class LLMConfigService:
         self,
         user_id: int,
         role: str = "writer",
+        content_rating: Optional[str] = None,
     ) -> LLMConfigRead:
-        """Return the LLM config appropriate for a given pipeline role.
-
-        Supported roles: writer, reviewer, optimizer, summarizer.
-        Currently all roles map to the single user config; this method is the
-        hook point for per-role model routing in future iterations.
-        """
         base = await self.get_config(user_id)
-        # Role-specific overrides can be wired here (e.g. lighter models for
-        # reviewer/optimizer/summarizer roles) once env vars are added.
-        return base
+        overrides = resolve_llm_override(role=role, content_rating=content_rating)
+        if not any(overrides.values()):
+            return base
+
+        return LLMConfigRead.model_validate(
+            {
+                **base.model_dump(),
+                "llm_provider_api_key": overrides["api_key"] or base.llm_provider_api_key,
+                "llm_provider_url": overrides["base_url"] or base.llm_provider_url,
+                "llm_provider_model": overrides["model"] or base.llm_provider_model,
+            }
+        )
 
     async def delete_config(self, user_id: int) -> bool:
         instance = await self.repo.get_by_user(user_id)

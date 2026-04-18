@@ -127,6 +127,7 @@ class EnrichmentService:
         chapter_text: str,
         target_word_count: int,
         user_id: int,
+        content_rating: Optional[str] = None,
         threshold: float = 0.8
     ) -> Optional[EnrichmentResult]:
         """
@@ -155,7 +156,8 @@ class EnrichmentService:
             chapter_text=chapter_text,
             target_word_count=target_word_count,
             current_word_count=current_count,
-            user_id=user_id
+            user_id=user_id,
+            content_rating=content_rating,
         )
         
         if not enriched:
@@ -176,6 +178,7 @@ class EnrichmentService:
         chapter_text: str,
         target_word_count: int,
         user_id: int,
+        content_rating: Optional[str] = None,
         max_iterations: int = 3
     ) -> str:
         """
@@ -204,6 +207,7 @@ class EnrichmentService:
                 chapter_text=current_text,
                 target_word_count=target_word_count,
                 user_id=user_id,
+                content_rating=content_rating,
                 threshold=0.8
             )
             
@@ -218,7 +222,8 @@ class EnrichmentService:
         self,
         dialogue_text: str,
         character_info: str,
-        user_id: int
+        user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Optional[str]:
         """
         扩写对话场景
@@ -234,6 +239,8 @@ class EnrichmentService:
             response = await self.llm_service.generate(
                 prompt=prompt,
                 user_id=user_id,
+                role="writer",
+                content_rating=content_rating,
                 max_tokens=4000,
                 temperature=0.6
             )
@@ -248,7 +255,8 @@ class EnrichmentService:
         location: str,
         time: str,
         atmosphere: str,
-        user_id: int
+        user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Optional[str]:
         """
         扩写场景描写
@@ -266,6 +274,8 @@ class EnrichmentService:
             response = await self.llm_service.generate(
                 prompt=prompt,
                 user_id=user_id,
+                role="writer",
+                content_rating=content_rating,
                 max_tokens=3000,
                 temperature=0.6
             )
@@ -279,7 +289,8 @@ class EnrichmentService:
         chapter_text: str,
         target_word_count: int,
         current_word_count: int,
-        user_id: int
+        user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Optional[str]:
         """执行章节扩写"""
         prompt = ENRICH_CHAPTER_PROMPT.format(
@@ -292,6 +303,8 @@ class EnrichmentService:
             response = await self.llm_service.generate(
                 prompt=prompt,
                 user_id=user_id,
+                role="writer",
+                content_rating=content_rating,
                 max_tokens=8000,
                 temperature=0.6
             )

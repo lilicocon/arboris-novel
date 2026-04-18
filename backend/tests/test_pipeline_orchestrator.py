@@ -197,5 +197,37 @@ class PipelineOrchestratorParallelVersionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, orchestrator.session.commit.await_count)
 
 
+class PipelineOrchestratorGradientRetryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_with_gradient_retry_reduces_context_on_last_attempt(self) -> None:
+        orchestrator = object.__new__(PipelineOrchestrator)
+        orchestrator.llm_service = type("LLM", (), {"get_llm_response": AsyncMock()})()
+        orchestrator.llm_service.get_llm_response.side_effect = [
+            RuntimeError("first failure"),
+            RuntimeError("second failure"),
+            "甲" * 200,
+        ]
+
+        prompt_sections = [
+            ("[章节导演脚本](JSON)", '{"macro_beat": "E"}'),
+            ("[检索到的剧情上下文](Markdown)", "乙" * 2000),
+        ]
+
+        content = await PipelineOrchestrator._generate_with_gradient_retry(
+            orchestrator,
+            system_prompt="system",
+            user_content="\n\n".join(f"{title}\n{body}" for title, body in prompt_sections),
+            prompt_sections=prompt_sections,
+            user_id=1,
+            max_tokens=1024,
+            retry_budget_tokens=120,
+        )
+
+        self.assertEqual("甲" * 200, content)
+        third_call = orchestrator.llm_service.get_llm_response.await_args_list[2]
+        third_prompt = third_call.kwargs["conversation_history"][0]["content"]
+        self.assertIn("[章节导演脚本](JSON)", third_prompt)
+        self.assertNotIn("[检索到的剧情上下文](Markdown)", third_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

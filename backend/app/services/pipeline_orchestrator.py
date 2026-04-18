@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 CN_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 MIN_CHAPTER_VERSION_COUNT = 1
 MAX_CHAPTER_VERSION_COUNT = 2
+RETRY_REDUCED_CONTEXT_BUDGET = 12000
 
 
 def _clamp_version_count(value: int) -> int:
@@ -142,6 +143,7 @@ class PipelineOrchestrator:
 
         project_schema = await self.novel_service._serialize_project(project)
         blueprint_dict = self._normalize_blueprint(project_schema.blueprint.model_dump())
+        content_rating = str(blueprint_dict.get("content_rating") or "safe").lower()
 
         target_word_count = _resolve_target_word_count(
             request_target=request_target,
@@ -166,6 +168,7 @@ class PipelineOrchestrator:
             introduced_characters=[],
             all_characters=all_characters,
             user_id=user_id,
+            content_rating=content_rating,
         )
         chapter.generation_progress = 28
         chapter.generation_step = "director_mission"
@@ -270,7 +273,7 @@ class PipelineOrchestrator:
             prompt_sections = enhanced_flow.build_enhanced_prompt_sections(prompt_sections, enhanced_context)
 
         prompt_sections = ContextBudgeter(total_budget_tokens=16000).fit(prompt_sections)
-        prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
+        prompt_input = self._compose_prompt_input(prompt_sections)
         logger.debug("Pipeline prompt length: %s chars", len(prompt_input))
         chapter.generation_progress = 55
         chapter.generation_step = "draft_generation"
@@ -308,6 +311,8 @@ class PipelineOrchestrator:
                     config=config,
                     max_tokens=max_tokens,
                     target_word_count=target_word_count,
+                    prompt_sections=prompt_sections,
+                    content_rating=content_rating,
                 )
             version_factories.append(build_factory())
 
@@ -324,6 +329,7 @@ class PipelineOrchestrator:
             versions=versions,
             chapter_mission=chapter_mission,
             user_id=user_id,
+            content_rating=content_rating,
         )
 
         review_summaries: Dict[str, Any] = {}
@@ -384,7 +390,11 @@ class PipelineOrchestrator:
                 review_summaries["consistency"] = consistency_report
 
             if config.enable_optimizer:
-                best_content, optimizer_report = await self._run_optimizer(best_content, user_id=user_id)
+                best_content, optimizer_report = await self._run_optimizer(
+                    best_content,
+                    user_id=user_id,
+                    content_rating=content_rating,
+                )
                 review_summaries["optimizer"] = optimizer_report
 
             if self._should_run_enrichment(
@@ -396,6 +406,7 @@ class PipelineOrchestrator:
                     best_content,
                     user_id=user_id,
                     target_word_count=target_word_count,
+                    content_rating=content_rating,
                 )
                 if enrichment_report:
                     review_summaries["enrichment"] = enrichment_report
@@ -491,6 +502,16 @@ class PipelineOrchestrator:
     @staticmethod
     def _count_text_length(text: str) -> int:
         return len(re.sub(r"\s+", "", text or ""))
+
+    @staticmethod
+    def _compose_prompt_input(
+        prompt_sections: List[Tuple[str, str]],
+        style_hint: Optional[str] = None,
+    ) -> str:
+        prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
+        if style_hint:
+            prompt_input += f"\n\n[版本风格提示]\n{style_hint}"
+        return prompt_input
 
     @classmethod
     def _select_preferred_version_index(
@@ -686,6 +707,7 @@ class PipelineOrchestrator:
         introduced_characters: List[str],
         all_characters: List[str],
         user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Optional[dict]:
         plan_prompt = await self.prompt_service.get_prompt("chapter_plan")
         if not plan_prompt:
@@ -719,6 +741,8 @@ class PipelineOrchestrator:
                 conversation_history=[{"role": "user", "content": plan_input}],
                 temperature=0.3,
                 user_id=user_id,
+                role="writer",
+                content_rating=content_rating,
                 timeout=120.0,
             )
             cleaned = remove_think_tags(response)
@@ -954,6 +978,7 @@ class PipelineOrchestrator:
         *,
         index: int,
         prompt_input: str,
+        prompt_sections: List[Tuple[str, str]],
         writer_prompt: str,
         style_hint: Optional[str],
         project_id: str,
@@ -970,6 +995,7 @@ class PipelineOrchestrator:
         config: PipelineConfig,
         max_tokens: int = WRITER_GENERATION_MAX_TOKENS,
         target_word_count: int = DEFAULT_CHAPTER_TARGET_WORD_COUNT,
+        content_rating: Optional[str] = None,
     ) -> Dict[str, Any]:
         metadata: Dict[str, Any] = {
             "chapter_mission": chapter_mission,
@@ -994,15 +1020,14 @@ class PipelineOrchestrator:
             metadata["preview"] = preview_meta
 
         if not content:
-            final_prompt_input = prompt_input
-            if style_hint:
-                final_prompt_input += f"\n\n[版本风格提示]\n{style_hint}"
-
             content = await self._generate_with_gradient_retry(
                 system_prompt=writer_prompt,
-                user_content=final_prompt_input,
+                user_content=prompt_input,
+                prompt_sections=prompt_sections,
+                style_hint=style_hint,
                 user_id=user_id,
                 max_tokens=max_tokens,
+                content_rating=content_rating,
             )
 
         guardrail_result = self.guardrails.check(
@@ -1049,21 +1074,39 @@ class PipelineOrchestrator:
         *,
         system_prompt: str,
         user_content: str,
+        prompt_sections: Optional[List[Tuple[str, str]]] = None,
+        style_hint: Optional[str] = None,
         user_id: int,
         max_tokens: int,
+        content_rating: Optional[str] = None,
         base_temperature: float = 0.9,
+        retry_budget_tokens: int = RETRY_REDUCED_CONTEXT_BUDGET,
     ) -> str:
         """LLM call with gradient retry: temperature bump → reduced context."""
-        _RETRY_TEMPS = [base_temperature, min(base_temperature + 0.1, 1.0)]
+        base_input = user_content
+        if style_hint:
+            base_input += f"\n\n[版本风格提示]\n{style_hint}"
+        retry_inputs: List[Tuple[str, float, str]] = [
+            (base_input, base_temperature, "base"),
+            (base_input, min(base_temperature + 0.1, 1.0), "temp_bump"),
+        ]
+        if prompt_sections:
+            reduced_sections = ContextBudgeter(total_budget_tokens=retry_budget_tokens).fit(prompt_sections)
+            reduced_input = self._compose_prompt_input(reduced_sections, style_hint)
+            if reduced_input != base_input:
+                retry_inputs.append((reduced_input, min(base_temperature + 0.1, 1.0), "reduced_context"))
+
         last_exc: Optional[Exception] = None
 
-        for attempt, temp in enumerate(_RETRY_TEMPS):
+        for attempt, (attempt_input, temp, attempt_mode) in enumerate(retry_inputs):
             try:
                 response = await self.llm_service.get_llm_response(
                     system_prompt=system_prompt,
-                    conversation_history=[{"role": "user", "content": user_content}],
+                    conversation_history=[{"role": "user", "content": attempt_input}],
                     temperature=temp,
                     user_id=user_id,
+                    role="writer",
+                    content_rating=content_rating,
                     timeout=600.0,
                     response_format=None,
                     max_tokens=max_tokens,
@@ -1077,13 +1120,14 @@ class PipelineOrchestrator:
                     detail="写作模型返回内容过短或为空，请重试",
                 )
                 logger.warning(
-                    "Generation attempt %d returned short/empty content (%d chars), retrying",
+                    "Generation attempt %d (%s) returned short/empty content (%d chars), retrying",
                     attempt + 1,
+                    attempt_mode,
                     len(content),
                 )
             except Exception as exc:
                 last_exc = exc
-                logger.warning("Generation attempt %d failed: %s", attempt + 1, exc)
+                logger.warning("Generation attempt %d (%s) failed: %s", attempt + 1, attempt_mode, exc)
 
         raise last_exc or HTTPException(status_code=502, detail="写作模型未返回有效内容，请重试")
 
@@ -1194,6 +1238,7 @@ class PipelineOrchestrator:
         versions: List[Dict[str, Any]],
         chapter_mission: Optional[dict],
         user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Tuple[int, Optional[Dict[str, Any]]]:
         if len(versions) <= 1:
             return 0, None
@@ -1205,6 +1250,7 @@ class PipelineOrchestrator:
                 versions=contents,
                 chapter_mission=chapter_mission,
                 user_id=user_id,
+                content_rating=content_rating,
             )
         except Exception as exc:
             logger.warning("AI 评审失败，跳过: %s", exc)
@@ -1314,7 +1360,13 @@ class PipelineOrchestrator:
         report["auto_fix_applied"] = False
         return chapter_text, report
 
-    async def _run_optimizer(self, chapter_content: str, *, user_id: int) -> Tuple[str, Dict[str, Any]]:
+    async def _run_optimizer(
+        self,
+        chapter_content: str,
+        *,
+        user_id: int,
+        content_rating: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
         prompt_map = {
             "dialogue": "optimize_dialogue",
             "environment": "optimize_environment",
@@ -1340,6 +1392,8 @@ class PipelineOrchestrator:
                     conversation_history=[{"role": "user", "content": json.dumps(optimize_input, ensure_ascii=False)}],
                     temperature=0.7,
                     user_id=user_id,
+                    role="optimizer",
+                    content_rating=content_rating,
                     timeout=600.0,
                 )
                 cleaned = remove_think_tags(response)
@@ -1367,6 +1421,7 @@ class PipelineOrchestrator:
         *,
         user_id: int,
         target_word_count: int = 3000,
+        content_rating: Optional[str] = None,
         target_ratio: float = 0.8,
         max_rounds: int = 5,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
@@ -1382,6 +1437,7 @@ class PipelineOrchestrator:
                 chapter_text=current_content,
                 target_word_count=target_word_count,
                 user_id=user_id,
+                content_rating=content_rating,
                 threshold=target_ratio,
             )
             if not result:

@@ -88,6 +88,7 @@ export interface Blueprint {
   genre?: string
   style?: string
   tone?: string
+  content_rating?: 'safe' | 'mature' | 'explicit'
   one_sentence_summary?: string
   full_synopsis?: string
   world_setting?: any

@@ -344,6 +344,7 @@ class NovelService:
         record.genre = blueprint.genre
         record.style = blueprint.style
         record.tone = blueprint.tone
+        record.content_rating = blueprint.content_rating or "safe"
         record.one_sentence_summary = blueprint.one_sentence_summary
         record.full_synopsis = blueprint.full_synopsis
         record.world_setting = blueprint.world_setting
@@ -461,6 +462,8 @@ class NovelService:
         if "chapter_length" in patch:
             val = patch["chapter_length"]
             blueprint.chapter_length = int(val) if val not in (None, "") else None
+        if "content_rating" in patch and patch["content_rating"] is not None:
+            blueprint.content_rating = patch["content_rating"] or "safe"
         await self.session.commit()
         await self._touch_project(project_id)
 
@@ -767,6 +770,7 @@ class NovelService:
                 genre=blueprint_obj.genre or "",
                 style=blueprint_obj.style or "",
                 tone=blueprint_obj.tone or "",
+                content_rating=blueprint_obj.content_rating or "safe",
                 one_sentence_summary=blueprint_obj.one_sentence_summary or "",
                 full_synopsis=blueprint_obj.full_synopsis or "",
                 world_setting=blueprint_obj.world_setting or {},
@@ -807,6 +811,7 @@ class NovelService:
             genre="",
             style="",
             tone="",
+            content_rating="safe",
             one_sentence_summary="",
             full_synopsis="",
             world_setting={},
@@ -832,6 +837,7 @@ class NovelService:
                 "genre": blueprint.genre,
                 "style": blueprint.style,
                 "tone": blueprint.tone,
+                "content_rating": blueprint.content_rating,
                 "full_synopsis": blueprint.full_synopsis,
                 "chapter_length": blueprint.chapter_length,
                 "updated_at": project.updated_at.isoformat() if project.updated_at else None,

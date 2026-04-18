@@ -35,6 +35,13 @@
             <CharactersEditor v-else-if="props.field === 'characters'" v-model="editableContent" />
             <RelationshipsEditor v-else-if="props.field === 'relationships'" v-model="editableContent" />
             <FactionsEditor v-else-if="props.field === 'world_setting.factions'" v-model="editableContent" />
+            <div v-else-if="props.field === 'content_rating'" class="md-text-field">
+              <select v-model="editableContent" class="md-textarea w-full">
+                <option value="safe">Safe</option>
+                <option value="mature">Mature</option>
+                <option value="explicit">Explicit</option>
+              </select>
+            </div>
             <div v-else class="md-text-field">
               <textarea 
                 v-model="editableContent" 

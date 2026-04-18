@@ -183,6 +183,10 @@ async def _ensure_schema_updates() -> None:
                 bp_columns = {col["name"] for col in inspector.get_columns("novel_blueprints")}
                 if "chapter_length" not in bp_columns:
                     sync_conn.execute(text("ALTER TABLE novel_blueprints ADD COLUMN chapter_length INTEGER"))
+                if "content_rating" not in bp_columns:
+                    sync_conn.execute(
+                        text("ALTER TABLE novel_blueprints ADD COLUMN content_rating VARCHAR(16) DEFAULT 'safe'")
+                    )
 
             if "character_states" in table_names:
                 cs_columns = {col["name"]: col for col in inspector.get_columns("character_states")}

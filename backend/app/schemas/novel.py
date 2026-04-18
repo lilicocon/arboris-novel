@@ -1,7 +1,7 @@
 # AIMETA P=小说模式_小说和章节请求响应|R=小说结构_章节结构|NR=不含业务逻辑|E=NovelSchema_ChapterSchema|X=internal|A=Pydantic模式|D=pydantic|S=none|RD=./README.ai
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -82,6 +82,7 @@ class Blueprint(BaseModel):
     genre: str = ""
     style: str = ""
     tone: str = ""
+    content_rating: Literal["safe", "mature", "explicit"] = "safe"
     one_sentence_summary: str = ""
     full_synopsis: str = ""
     world_setting: Dict[str, Any] = {}
@@ -239,6 +240,7 @@ class BlueprintPatch(BaseModel):
     relationships: Optional[List[Relationship]] = None
     chapter_outline: Optional[List[ChapterOutline]] = None
     chapter_length: Optional[int] = None
+    content_rating: Optional[Literal["safe", "mature", "explicit"]] = None
 
 
 class EditChapterRequest(BaseModel):

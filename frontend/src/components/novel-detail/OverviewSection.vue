@@ -42,6 +42,25 @@
 
     <div class="bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-4 flex items-center justify-between">
       <div>
+        <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">内容分级</h4>
+        <p class="text-base font-medium text-slate-800">
+          {{ contentRatingLabel }}
+        </p>
+      </div>
+      <button
+        v-if="editable"
+        type="button"
+        class="text-gray-400 hover:text-indigo-600 transition-colors flex-shrink-0"
+        @click="emitEdit('content_rating', '内容分级', data?.content_rating ?? 'safe')">
+        <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+          <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+        </svg>
+      </button>
+    </div>
+
+    <div class="bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-4 flex items-center justify-between">
+      <div>
         <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">每章目标字数</h4>
         <p class="text-base font-medium text-slate-800">
           {{ data?.chapter_length ? `${data.chapter_length.toLocaleString()} 字` : '使用默认值（3000 字）' }}
@@ -81,7 +100,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineEmits, defineProps } from 'vue'
+import { computed, defineEmits, defineProps } from 'vue'
 
 interface OverviewData {
   one_sentence_summary?: string | null
@@ -89,6 +108,7 @@ interface OverviewData {
   genre?: string | null
   style?: string | null
   tone?: string | null
+  content_rating?: 'safe' | 'mature' | 'explicit' | null
   full_synopsis?: string | null
   chapter_length?: number | null
 }
@@ -106,6 +126,17 @@ const emitEdit = (field: string, title: string, value: any) => {
   if (!props.editable) return
   emit('edit', { field, title, value })
 }
+
+const contentRatingLabel = computed(() => {
+  switch (props.data?.content_rating) {
+    case 'mature':
+      return 'Mature'
+    case 'explicit':
+      return 'Explicit'
+    default:
+      return 'Safe'
+  }
+})
 </script>
 
 <script lang="ts">

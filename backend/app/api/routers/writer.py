@@ -480,6 +480,7 @@ async def _generate_chapter_mission(
     introduced_characters: List[str],
     all_characters: List[str],
     user_id: int,
+    content_rating: Optional[str] = None,
 ) -> Optional[dict]:
     """
     L2 Director: 生成章节导演脚本（ChapterMission）
@@ -516,6 +517,8 @@ async def _generate_chapter_mission(
             conversation_history=[{"role": "user", "content": plan_input}],
             temperature=0.3,
             user_id=user_id,
+            role="writer",
+            content_rating=content_rating,
             timeout=120.0,
         )
         cleaned = remove_think_tags(response)
@@ -535,6 +538,7 @@ async def _rewrite_with_guardrails(
     chapter_mission: Optional[dict],
     violations_text: str,
     user_id: int,
+    content_rating: Optional[str] = None,
 ) -> str:
     """
     使用护栏修复提示词重写违规内容
@@ -561,6 +565,8 @@ async def _rewrite_with_guardrails(
             conversation_history=[{"role": "user", "content": rewrite_input}],
             temperature=0.3,
             user_id=user_id,
+            role="writer",
+            content_rating=content_rating,
             timeout=300.0,
             response_format=None,
             max_tokens=WRITER_GENERATION_MAX_TOKENS,
@@ -1031,6 +1037,7 @@ async def generate_chapter(
         request_target=request.target_word_count,
         blueprint_chapter_length=blueprint_dict.get("chapter_length"),
     )
+    content_rating = str(blueprint_dict.get("content_rating") or "safe").lower()
     min_word_count = int(target_word_count * 0.73)
     max_tokens = _calc_max_tokens(target_word_count)
 
@@ -1056,6 +1063,7 @@ async def generate_chapter(
             introduced_characters=[],  # 将在下一步填充
             all_characters=all_characters,
             user_id=current_user.id,
+            content_rating=content_rating,
         )
     except HTTPException:
         await _mark_generation_failed()
@@ -1218,6 +1226,8 @@ async def generate_chapter(
                 conversation_history=[{"role": "user", "content": final_prompt_input}],
                 temperature=0.9,
                 user_id=current_user.id,
+                role="writer",
+                content_rating=content_rating,
                 timeout=600.0,
                 response_format=None,
                 max_tokens=max_tokens,
@@ -1258,6 +1268,7 @@ async def generate_chapter(
                     chapter_mission=chapter_mission,
                     violations_text=violations_text,
                     user_id=current_user.id,
+                    content_rating=content_rating,
                 )
                 if not final_content:
                     logger.warning(
@@ -1442,6 +1453,7 @@ async def generate_chapter(
                 versions=contents,
                 chapter_mission=chapter_mission,
                 user_id=current_user.id,
+                content_rating=content_rating,
             )
             if ai_review_result:
                 logger.info(
@@ -1670,11 +1682,14 @@ async def evaluate_chapter(
         return await _load_project_schema(novel_service, project_id, current_user.id)
 
     try:
+        content_rating = str(getattr(project.blueprint, "content_rating", "safe") or "safe").lower()
         evaluation_raw = await llm_service.get_llm_response(
             system_prompt=eval_prompt,
             conversation_history=[{"role": "user", "content": version_to_evaluate.content}],
             temperature=0.3,
             user_id=current_user.id,
+            role="reviewer",
+            content_rating=content_rating,
         )
         evaluation_text = remove_think_tags(evaluation_raw)
         

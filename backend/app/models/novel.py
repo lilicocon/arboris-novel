@@ -91,6 +91,7 @@ class NovelBlueprint(Base):
     genre: Mapped[Optional[str]] = mapped_column(String(128))
     style: Mapped[Optional[str]] = mapped_column(String(128))
     tone: Mapped[Optional[str]] = mapped_column(String(128))
+    content_rating: Mapped[Optional[str]] = mapped_column(String(16), default="safe")
     one_sentence_summary: Mapped[Optional[str]] = mapped_column(Text)
     full_synopsis: Mapped[Optional[str]] = mapped_column(LONG_TEXT_TYPE)
     world_setting: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)

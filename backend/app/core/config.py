@@ -86,6 +86,21 @@ class Settings(BaseSettings):
         description="LLM API Base URL",
     )
     openai_model_name: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL_NAME", description="默认 LLM 模型名称")
+    reviewer_llm_api_key: Optional[str] = Field(default=None, env="REVIEWER_LLM_API_KEY", description="评审模型 API Key")
+    reviewer_llm_base_url: Optional[HttpUrl] = Field(default=None, env="REVIEWER_LLM_BASE_URL", description="评审模型 Base URL")
+    reviewer_llm_model_name: Optional[str] = Field(default=None, env="REVIEWER_LLM_MODEL_NAME", description="评审模型名称")
+    optimizer_llm_api_key: Optional[str] = Field(default=None, env="OPTIMIZER_LLM_API_KEY", description="优化模型 API Key")
+    optimizer_llm_base_url: Optional[HttpUrl] = Field(default=None, env="OPTIMIZER_LLM_BASE_URL", description="优化模型 Base URL")
+    optimizer_llm_model_name: Optional[str] = Field(default=None, env="OPTIMIZER_LLM_MODEL_NAME", description="优化模型名称")
+    summarizer_llm_api_key: Optional[str] = Field(default=None, env="SUMMARIZER_LLM_API_KEY", description="摘要模型 API Key")
+    summarizer_llm_base_url: Optional[HttpUrl] = Field(default=None, env="SUMMARIZER_LLM_BASE_URL", description="摘要模型 Base URL")
+    summarizer_llm_model_name: Optional[str] = Field(default=None, env="SUMMARIZER_LLM_MODEL_NAME", description="摘要模型名称")
+    mature_llm_api_key: Optional[str] = Field(default=None, env="MATURE_LLM_API_KEY", description="mature 分级写作模型 API Key")
+    mature_llm_base_url: Optional[HttpUrl] = Field(default=None, env="MATURE_LLM_BASE_URL", description="mature 分级写作模型 Base URL")
+    mature_llm_model_name: Optional[str] = Field(default=None, env="MATURE_LLM_MODEL_NAME", description="mature 分级写作模型名称")
+    explicit_llm_api_key: Optional[str] = Field(default=None, env="EXPLICIT_LLM_API_KEY", description="explicit 分级写作模型 API Key")
+    explicit_llm_base_url: Optional[HttpUrl] = Field(default=None, env="EXPLICIT_LLM_BASE_URL", description="explicit 分级写作模型 Base URL")
+    explicit_llm_model_name: Optional[str] = Field(default=None, env="EXPLICIT_LLM_MODEL_NAME", description="explicit 分级写作模型名称")
     writer_chapter_versions: int = Field(
         default=1,
         ge=1,
@@ -211,6 +226,11 @@ class Settings(BaseSettings):
         "embedding_base_url",
         "ollama_embedding_base_url",
         "openai_base_url",
+        "reviewer_llm_base_url",
+        "optimizer_llm_base_url",
+        "summarizer_llm_base_url",
+        "mature_llm_base_url",
+        "explicit_llm_base_url",
         pre=True,
         always=True,
     )

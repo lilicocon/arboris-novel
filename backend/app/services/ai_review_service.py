@@ -49,6 +49,7 @@ class AIReviewService:
         versions: List[str],
         chapter_mission: Optional[dict] = None,
         user_id: int = 0,
+        content_rating: Optional[str] = None,
     ) -> Optional[ReviewResult]:
         """
         对多个版本进行评审，返回评审结果。
@@ -91,6 +92,8 @@ class AIReviewService:
                 conversation_history=[{"role": "user", "content": review_input}],
                 temperature=0.3,
                 user_id=user_id,
+                role="reviewer",
+                content_rating=content_rating,
                 timeout=180.0,
             )
             cleaned = remove_think_tags(response)
@@ -163,6 +166,7 @@ class AIReviewService:
         versions: List[str],
         chapter_mission: Optional[dict] = None,
         user_id: int = 0,
+        content_rating: Optional[str] = None,
     ) -> int:
         """
         自动选择最佳版本的索引。
@@ -175,7 +179,7 @@ class AIReviewService:
         Returns:
             最佳版本的索引（从 0 开始）
         """
-        result = await self.review_versions(versions, chapter_mission, user_id)
+        result = await self.review_versions(versions, chapter_mission, user_id, content_rating)
         if result:
             return result.best_version_index
         return 0  # 默认返回第一个版本

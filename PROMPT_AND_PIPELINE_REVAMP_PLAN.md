@@ -34,23 +34,27 @@
    - `writer.py` 不再把 `sync_session` 传给 `FinalizeService`；`FinalizeService` 内部查询也已改成 async 风格。
 8. **测试基础设施不再是 0。**
    - 当前至少已有 `backend/tests/test_pipeline_orchestrator.py`、`backend/tests/test_outline_generation_service.py`、`backend/tests/test_finalize_service.py`、`backend/tests/test_novel_txt_export.py`。
+9. **LLM role 路由和内容分级基础链路已接上。**
+   - `LLMConfigService.get_config_for_role()` 已支持按 `reviewer / optimizer / summarizer` 覆盖模型，并支持 writer 按 `content_rating` 切到 `mature / explicit` 配置。
+   - `LLMService`、`PipelineOrchestrator`、`AIReviewService`、`OutlineGenerationService`、`FinalizeService` 和标准 `writer.py` 路由都已接入 `role` / `content_rating` 透传。
+10. **`content_rating` 已进入蓝图模型与前端。**
+   - `novel_blueprints` 已新增 `content_rating` 字段；
+   - `NovelService` 的保存、局部更新、序列化和 overview section 已打通；
+   - 前端概览区已支持展示和编辑 `content_rating`。
 
 ### 0.2 部分落地
 
 1. **失败梯度重试只完成第一层。**
-   - 现状：`PipelineOrchestrator._generate_with_gradient_retry()` 只有“同模型 + temperature 上调”的两次尝试。
-   - 还没做：按 section 缩上下文、fallback 模型、分场景兜底、版本级降级。
-2. **LLM role 路由只有接口，没有真正分流。**
-   - `LLMConfigService.get_config_for_role()` 已存在，但现在仍然直接返回同一份配置。
-3. **Enrichment 阈值已从 70% 提到 80%。**
+   - 现状：`PipelineOrchestrator._generate_with_gradient_retry()` 已支持“temperature 上调 + 缩掉次要 section 后重试”。
+   - 还没做：fallback 模型、分场景兜底、版本级降级。
+2. **Enrichment 阈值已从 70% 提到 80%。**
    - 这能减少无意义扩写，但本质上仍是整章后处理，不是按 `scene_list` 分段写。
 
 ### 0.3 仍未开始或尚未落地
 
-1. `content_rating` 还没有进入数据模型、API、前端表单和 provider 路由；现在只体现在 prompt 文案里。
-2. `SceneWiseWriter` 还不存在，10k 字级章节依然是一口气生成整章。
-3. 多 query RAG、rerank、按卷 namespace、卷级长期记忆、`WorldStateService` 这些长篇能力还没进入代码。
-4. Prompt 版本化、Prompt 指纹缓存、单 section 续跑也还没开始。
+1. `SceneWiseWriter` 还不存在，10k 字级章节依然是一口气生成整章。
+2. 多 query RAG、rerank、按卷 namespace、卷级长期记忆、`WorldStateService` 这些长篇能力还没进入代码。
+3. Prompt 版本化、Prompt 指纹缓存、单 section 续跑也还没开始。
 
 ### 0.4 执行建议
 
@@ -503,8 +507,8 @@ outline_generation          -> 大纲（章节列表 + 1234 叙事节拍）
 ### P0（一周内可完成，现在问题最大）
 
 1. `ContextBudgeter` 基础版已完成，下一步改成**按模型窗口动态预算 + 失败时主动缩上下文再试**。
-2. 拆 LLM profile：`writer / reviewer / optimizer / summarizer` 四挡，`LLMConfigService` 目前只有 `get_config_for_role()` 空壳，需要真正分流。
-3. 分级路由：加 `content_rating` 字段 + `ContentRoutingService`（集中管理"分级 → profile"映射）。
+2. 拆 LLM profile：`writer / reviewer / optimizer / summarizer` 四挡，基础分流已落地；下一步是补更细的 provider 切换和观测。
+3. 分级路由：`content_rating` 字段、writer 路由和前端编辑已落地；下一步是继续收敛成单独的 `ContentRoutingService` 和更完整的评审分支。
 4. Prompt 改动（第三部分 P0）：
    - 把 `optimize_*` 输入说明改成 `{original_content, additional_notes}`。
    - 所有 JSON prompt 末尾追加统一 JSON 约束段。
@@ -515,7 +519,7 @@ outline_generation          -> 大纲（章节列表 + 1234 叙事节拍）
    - `concept.md` / `screenwriting.md` 去 jailbreak，改为分级声明。
    - 上面前 5 条在当前工作区已完成，剩余主项是死档 prompt 清理和后续工程化。
 5. 失败梯度重试（temp → section → 模型 → 分场景 → 版本兜底）。
-   - 当前只完成了第一档 `temperature` 重试。
+   - 当前已完成 `temperature` 重试和缩上下文重试。
 6. 新增的已完成项：
    - `OutlineGenerationService` 已落地并接入前后端。
    - `FinalizeService` 已适配 async session。

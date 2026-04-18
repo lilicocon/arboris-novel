@@ -22,7 +22,7 @@ from ..models.project_memory import ProjectMemory, ChapterSnapshot
 from ..models.memory_layer import CharacterState
 from ..models.chapter_blueprint import ChapterBlueprint
 from ..models.novel import ChapterOutline
-from ..models.novel import BlueprintCharacter
+from ..models.novel import BlueprintCharacter, NovelBlueprint
 from .chapter_ingest_service import ChapterIngestionService
 from .llm_service import LLMService
 from .vector_store_service import VectorStoreService
@@ -186,6 +186,7 @@ class FinalizeService:
         }
         
         try:
+            content_rating = await self._get_content_rating(project_id)
             # 1. 获取或创建项目记忆
             project_memory = await self._get_or_create_project_memory(project_id)
             
@@ -193,7 +194,8 @@ class FinalizeService:
             new_summary = await self._update_global_summary(
                 chapter_text=chapter_text,
                 old_summary=project_memory.global_summary or "",
-                user_id=user_id
+                user_id=user_id,
+                content_rating=content_rating,
             )
             if new_summary:
                 project_memory.global_summary = new_summary
@@ -204,7 +206,8 @@ class FinalizeService:
             new_state = await self._update_character_state(
                 chapter_text=chapter_text,
                 old_state=old_state,
-                user_id=user_id
+                user_id=user_id,
+                content_rating=content_rating,
             )
             if new_state:
                 await self._save_character_state(project_id, chapter_number, new_state)
@@ -215,7 +218,8 @@ class FinalizeService:
                 chapter_text=chapter_text,
                 chapter_number=chapter_number,
                 old_plot_arcs=project_memory.plot_arcs or {},
-                user_id=user_id
+                user_id=user_id,
+                content_rating=content_rating,
             )
             if new_plot_arcs:
                 project_memory.plot_arcs = new_plot_arcs
@@ -234,7 +238,8 @@ class FinalizeService:
             chapter_summary = await self._generate_chapter_summary(
                 chapter_text=chapter_text,
                 chapter_number=chapter_number,
-                user_id=user_id
+                user_id=user_id,
+                content_rating=content_rating,
             )
             await self._create_chapter_snapshot(
                 project_id=project_id,
@@ -291,7 +296,8 @@ class FinalizeService:
         self,
         chapter_text: str,
         old_summary: str,
-        user_id: int
+        user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Optional[str]:
         """更新全局摘要"""
         prompt = UPDATE_GLOBAL_SUMMARY_PROMPT.format(
@@ -303,6 +309,8 @@ class FinalizeService:
             response = await self.llm_service.generate(
                 prompt=prompt,
                 user_id=user_id,
+                role="summarizer",
+                content_rating=content_rating,
                 max_tokens=3000,
                 temperature=0.3
             )
@@ -353,7 +361,8 @@ class FinalizeService:
         self,
         chapter_text: str,
         old_state: str,
-        user_id: int
+        user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Optional[str]:
         """更新角色状态"""
         prompt = UPDATE_CHARACTER_STATE_PROMPT.format(
@@ -365,6 +374,8 @@ class FinalizeService:
             response = await self.llm_service.generate(
                 prompt=prompt,
                 user_id=user_id,
+                role="summarizer",
+                content_rating=content_rating,
                 max_tokens=4000,
                 temperature=0.3
             )
@@ -418,7 +429,8 @@ class FinalizeService:
         chapter_text: str,
         chapter_number: int,
         old_plot_arcs: Dict,
-        user_id: int
+        user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Optional[Dict]:
         """更新剧情线追踪"""
         import json
@@ -433,6 +445,8 @@ class FinalizeService:
             response = await self.llm_service.generate(
                 prompt=prompt,
                 user_id=user_id,
+                role="summarizer",
+                content_rating=content_rating,
                 max_tokens=2000,
                 temperature=0.3
             )
@@ -489,7 +503,8 @@ class FinalizeService:
         self,
         chapter_text: str,
         chapter_number: int,
-        user_id: int
+        user_id: int,
+        content_rating: Optional[str] = None,
     ) -> Optional[str]:
         """生成章节摘要"""
         prompt = GENERATE_CHAPTER_SUMMARY_PROMPT.format(
@@ -501,6 +516,8 @@ class FinalizeService:
             response = await self.llm_service.generate(
                 prompt=prompt,
                 user_id=user_id,
+                role="summarizer",
+                content_rating=content_rating,
                 max_tokens=500,
                 temperature=0.3
             )
@@ -508,6 +525,12 @@ class FinalizeService:
         except Exception as e:
             logger.error(f"生成章节摘要失败: {e}")
             return None
+
+    async def _get_content_rating(self, project_id: str) -> str:
+        result = await self.db.execute(
+            select(NovelBlueprint.content_rating).where(NovelBlueprint.project_id == project_id)
+        )
+        return result.scalar() or "safe"
     
     async def _create_chapter_snapshot(
         self,
