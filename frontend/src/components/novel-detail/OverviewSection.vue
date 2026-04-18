@@ -40,6 +40,25 @@
       </div>
     </div>
 
+    <div class="bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-4 flex items-center justify-between">
+      <div>
+        <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">每章目标字数</h4>
+        <p class="text-base font-medium text-slate-800">
+          {{ data?.chapter_length ? `${data.chapter_length.toLocaleString()} 字` : '使用默认值（3000 字）' }}
+        </p>
+      </div>
+      <button
+        v-if="editable"
+        type="button"
+        class="text-gray-400 hover:text-indigo-600 transition-colors flex-shrink-0"
+        @click="emitEdit('chapter_length', '每章目标字数', data?.chapter_length ?? null)">
+        <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+          <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+        </svg>
+      </button>
+    </div>
+
     <div class="bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-6">
       <div class="flex items-start justify-between gap-4 mb-4">
         <h3 class="text-lg font-semibold text-slate-900">完整剧情梗概</h3>
@@ -71,6 +90,7 @@ interface OverviewData {
   style?: string | null
   tone?: string | null
   full_synopsis?: string | null
+  chapter_length?: number | null
 }
 
 const props = defineProps<{

@@ -15,6 +15,16 @@
         >
           {{ novelStore.isLoading ? '正在准备...' : '开启灵感模式' }}
         </button>
+        <div v-if="savedProjectId" class="mt-6 p-4 bg-indigo-50 rounded-xl border border-indigo-100">
+          <p class="text-sm text-indigo-500 mb-3">检测到上次未完成的对话</p>
+          <button
+            @click="resumeLastConversation"
+            :disabled="novelStore.isLoading"
+            class="bg-white text-indigo-600 font-medium py-2 px-6 rounded-full border border-indigo-200 hover:bg-indigo-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            继续上次对话
+          </button>
+        </div>
         <button
           @click="goBack"
           class="mt-4 block mx-auto text-gray-500 hover:text-gray-800 transition-colors"
@@ -136,6 +146,8 @@ const router = useRouter()
 const route = useRoute()
 const novelStore = useNovelStore()
 
+const INSPIRATION_STORAGE_KEY = 'arboris_inspiration_project_id'
+
 const conversationStarted = ref(false)
 const isInitialLoading = ref(false)
 const showBlueprintConfirmation = ref(false)
@@ -148,6 +160,7 @@ const confirmationMessage = ref('')
 const blueprintMessage = ref('')
 const chatArea = ref<HTMLElement>()
 const isCheckingModelConfig = ref(false)
+const savedProjectId = ref<string | null>(null)
 
 const goBack = () => {
   router.push('/')
@@ -220,6 +233,8 @@ const resetInspirationMode = () => {
   // 清空 store 中的当前项目和对话状态
   novelStore.setCurrentProject(null)
   novelStore.currentConversationState = {}
+  localStorage.removeItem(INSPIRATION_STORAGE_KEY)
+  savedProjectId.value = null
 }
 
 const exitConversation = async () => {
@@ -254,7 +269,10 @@ const startConversation = async () => {
   
   try {
     await novelStore.createProject('未命名灵感', '开始灵感模式')
-    
+    if (novelStore.currentProject?.id) {
+      localStorage.setItem(INSPIRATION_STORAGE_KEY, novelStore.currentProject.id)
+    }
+
     // 发起第一次对话
     await handleUserInput(null)
   } catch (error) {
@@ -297,7 +315,8 @@ const restoreConversation = async (projectId: string) => {
           confirmationMessage.value = lastAssistantMsg.ai_message
           showBlueprintConfirmation.value = true
         } else {
-          // 否则，恢复对话
+          // 恢复对话状态和 UI 控制
+          novelStore.currentConversationState = lastAssistantMsg.conversation_state || {}
           currentUIControl.value = lastAssistantMsg.ui_control
         }
       }
@@ -392,6 +411,8 @@ const handleConfirmBlueprint = async () => {
   }
   try {
     await novelStore.saveBlueprint(completedBlueprint.value)
+    localStorage.removeItem(INSPIRATION_STORAGE_KEY)
+    savedProjectId.value = null
     // 跳转到写作工作台
     if (novelStore.currentProject) {
       router.push(`/novel/${novelStore.currentProject.id}`)
@@ -409,6 +430,13 @@ const scrollToBottom = async () => {
   }
 }
 
+const resumeLastConversation = async () => {
+  if (!savedProjectId.value) return
+  const hasRequiredConfig = await ensureModelConfigOrRedirect()
+  if (!hasRequiredConfig) return
+  await restoreConversation(savedProjectId.value)
+}
+
 onMounted(async () => {
   const hasRequiredConfig = await ensureModelConfigOrRedirect()
   if (!hasRequiredConfig) {
@@ -419,8 +447,12 @@ onMounted(async () => {
   if (projectId) {
     restoreConversation(projectId)
   } else {
-    // 每次进入灵感模式都重置状态，确保没有缓存
+    // 先读取后重置，避免 reset 内的 removeItem 先于读取执行
+    const stored = localStorage.getItem(INSPIRATION_STORAGE_KEY)
     resetInspirationMode()
+    if (stored) {
+      savedProjectId.value = stored
+    }
   }
 })
 </script>

@@ -101,7 +101,8 @@
 
 ```json
 {
-  "original_content": "需要优化的章节内容",
+  "original_content": "需要优化的章节内容（必须）",
+  "additional_notes": "额外优化指令（必须，如无特殊要求填：在不改变剧情走向的前提下优化该维度）",
   "character_dna": {
     "name": "角色名",
     "childhood_trauma": "童年创伤",
@@ -109,9 +110,15 @@
     "inner_desire": "内心渴望",
     "thinking_pattern": "思维模式"
   },
-  "scene_context": "场景背景说明"
+  "scene_context": "场景背景说明（可选）"
 }
 ```
+
+`character_dna` 和 `scene_context` 为可选字段；未提供时，根据 `original_content` 自行推断。
+
+## 输出纪律
+
+输出必须是单个合法 JSON 对象，不要 markdown 代码围栏、不要 `<think>` 标签、不要任何前言/后语/总结。字段名严格遵守上述规范，未知字段留空字符串 / 空数组 / null。
 
 ## 输出格式
 

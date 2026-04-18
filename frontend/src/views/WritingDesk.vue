@@ -425,16 +425,23 @@ const selectChapter = (chapterNumber: number) => {
   closeSidebar()
 }
 
-const generateChapter = async (chapterNumber: number) => {
+const generateChapter = async (chapterNumber: number, targetWordCount?: number) => {
   // 检查是否可以生成该章节
   if (!canGenerateChapter(chapterNumber) && !isChapterFailed(chapterNumber) && !hasChapterInProgress(chapterNumber)) {
     globalAlert.showError('请按顺序生成章节，先完成前面的章节', '生成受限')
     return
   }
 
+  const resolvedTargetWordCount = (
+    typeof targetWordCount === 'number' && targetWordCount > 0
+      ? targetWordCount
+      : project.value?.blueprint?.chapter_length ?? 3000
+  )
+
   try {
     generatingChapter.value = chapterNumber
     selectedChapterNumber.value = chapterNumber
+    chapterGenerationResult.value = null
     const nowIso = new Date().toISOString()
 
     // 在本地更新章节状态为generating
@@ -469,8 +476,8 @@ const generateChapter = async (chapterNumber: number) => {
       }
     }
 
-    await novelStore.generateChapter(chapterNumber)
-    // 关键兜底：生成接口在极少数情况下可能返回旧快照，这里强制拉取当前章最新状态。
+    await novelStore.generateChapter(chapterNumber, resolvedTargetWordCount)
+    // 高级生成接口不返回项目快照，这里强制拉取当前章最新状态。
     await novelStore.loadChapter(chapterNumber)
 
     // store 中的 project 已经被更新，所以我们不需要手动修改本地状态。

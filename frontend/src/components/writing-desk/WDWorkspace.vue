@@ -35,6 +35,18 @@
               手动编辑
             </button>
             <button
+              v-if="isSelectedChapterGeneratingLike"
+              @click="handleCancelGeneration"
+              :disabled="isCancellingGeneration"
+              class="md-btn md-btn-tonal md-ripple flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
+              style="color: var(--md-error);"
+            >
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clip-rule="evenodd"></path>
+              </svg>
+              {{ isCancellingGeneration ? '停止中...' : '停止生成' }}
+            </button>
+            <button
               @click="confirmRegenerateChapter"
               :disabled="isSelectedChapterGeneratingLike"
               class="md-btn md-btn-filled md-ripple flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
@@ -133,6 +145,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
+import { NovelAPI } from '@/api/novel'
 import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject } from '@/api/novel'
 import WorkspaceInitial from './workspace/WorkspaceInitial.vue'
 import ChapterGenerating from './workspace/ChapterGenerating.vue'
@@ -168,6 +181,23 @@ const emit = defineEmits([
   'fetchChapterStatus',
   'editChapter'
 ])
+
+const isCancellingGeneration = ref(false)
+
+const handleCancelGeneration = async () => {
+  if (!props.project || props.selectedChapterNumber === null || isCancellingGeneration.value) return
+  const confirmed = await globalAlert.showConfirm('停止后章节状态将重置为失败，可以重新生成。确定停止吗？', '停止生成')
+  if (!confirmed) return
+  isCancellingGeneration.value = true
+  try {
+    await NovelAPI.cancelChapterGeneration(props.project.id, props.selectedChapterNumber)
+    emit('fetchChapterStatus')
+  } catch {
+    // ignore — cancel endpoint best-effort
+  } finally {
+    isCancellingGeneration.value = false
+  }
+}
 
 const confirmRegenerateChapter = async () => {
   const confirmed = await globalAlert.showConfirm('重新生成会覆盖当前章节的现有内容，确定继续吗？', '重新生成确认')

@@ -47,6 +47,9 @@ from ...schemas.novel import (
     UpdateChapterOutlineRequest,
 )
 from ...schemas.user import UserInDB
+
+# chapter generation task registry: key = "{project_id}:{chapter_number}"
+_generation_tasks: dict[str, asyncio.Task] = {}
 from ...services.chapter_context_service import ChapterContextService
 from ...services.chapter_ingest_service import ChapterIngestionService
 from ...services.llm_service import LLMService
@@ -68,6 +71,21 @@ CN_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 DEFAULT_CHAPTER_TARGET_WORD_COUNT = 3000
 MIN_CHAPTER_WORD_COUNT = 2200
 WRITER_GENERATION_MAX_TOKENS = 7000
+
+
+def _resolve_target_word_count(
+    request_target: Optional[int],
+    blueprint_chapter_length: Optional[int],
+) -> int:
+    if request_target and request_target > 0:
+        return request_target
+    if blueprint_chapter_length and blueprint_chapter_length > 0:
+        return blueprint_chapter_length
+    return DEFAULT_CHAPTER_TARGET_WORD_COUNT
+
+
+def _calc_max_tokens(target_word_count: int) -> int:
+    return min(max(target_word_count * 2, WRITER_GENERATION_MAX_TOKENS), 32000)
 MIN_CHAPTER_VERSION_COUNT = 1
 MAX_CHAPTER_VERSION_COUNT = 2
 MAX_AUTO_FORESHADOWINGS_PER_CHAPTER = 5
@@ -864,6 +882,7 @@ async def generate_chapter(
 
     async def _mark_generation_failed() -> None:
         """确保异常后章节状态统一收敛到 failed，避免前端刷新后长期卡在 generating。"""
+        _generation_tasks.pop(f"{project_id}:{request.chapter_number}", None)
         try:
             await session.rollback()
         except Exception:
@@ -882,6 +901,12 @@ async def generate_chapter(
                 project_id,
                 request.chapter_number,
             )
+
+    # register current asyncio task for cancellation support
+    _gen_task_key = f"{project_id}:{request.chapter_number}"
+    _cur_task = asyncio.current_task()
+    if _cur_task:
+        _generation_tasks[_gen_task_key] = _cur_task
 
     chapter.real_summary = None
     chapter.selected_version_id = None
@@ -967,6 +992,13 @@ async def generate_chapter(
                 relation["from"] = relation.pop("character_from")
             if "character_to" in relation:
                 relation["to"] = relation.pop("character_to")
+
+    target_word_count = _resolve_target_word_count(
+        request_target=request.target_word_count,
+        blueprint_chapter_length=blueprint_dict.get("chapter_length"),
+    )
+    min_word_count = int(target_word_count * 0.73)
+    max_tokens = _calc_max_tokens(target_word_count)
 
     outline_title = outline.title or f"第{outline.chapter_number}章"
     outline_summary = outline.summary or "暂无摘要"
@@ -1127,8 +1159,8 @@ async def generate_chapter(
         (
             "[篇幅与排版要求]",
             (
-                f"目标字数：约 {DEFAULT_CHAPTER_TARGET_WORD_COUNT} 字，"
-                f"不得少于 {MIN_CHAPTER_WORD_COUNT} 字。"
+                f"目标字数：约 {target_word_count} 字，"
+                f"不得少于 {min_word_count} 字。"
                 "段落清晰，尽量保持自然段首行空两格。"
             ),
         ),
@@ -1154,7 +1186,7 @@ async def generate_chapter(
                 user_id=current_user.id,
                 timeout=600.0,
                 response_format=None,
-                max_tokens=WRITER_GENERATION_MAX_TOKENS,
+                max_tokens=max_tokens,
             )
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
@@ -1296,15 +1328,14 @@ async def generate_chapter(
         "悬念更重，多埋伏笔，结尾钩子更强",
     ]
 
-    raw_versions = []
     try:
+        await _update_generation_progress(progress=55, step="draft_generation", step_index=4)
+        raw_versions = []
         for idx in range(version_count):
-            style_hint = version_style_hints[idx] if idx < len(version_style_hints) else None
-            before_progress = 55 + int((idx / max(version_count, 1)) * 25)
-            await _update_generation_progress(progress=before_progress, step="draft_generation", step_index=4)
-            raw_versions.append(await _generate_single_version(idx, style_hint))
-            after_progress = 55 + int(((idx + 1) / max(version_count, 1)) * 25)
-            await _update_generation_progress(progress=after_progress, step="draft_generation", step_index=4)
+            result = await _generate_single_version(
+                idx, version_style_hints[idx] if idx < len(version_style_hints) else None
+            )
+            raw_versions.append(result)
     except Exception as exc:
         logger.exception("项目 %s 生成第 %s 章时发生异常: %s", project_id, request.chapter_number, exc)
         chapter.status = "failed"
@@ -1420,6 +1451,8 @@ async def generate_chapter(
     except HTTPException:
         await _mark_generation_failed()
         raise
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         logger.exception(
             "项目 %s 第 %s 章生成后加载项目状态失败: %s",
@@ -1429,6 +1462,34 @@ async def generate_chapter(
         )
         await _mark_generation_failed()
         raise HTTPException(status_code=500, detail="章节已生成，但刷新项目状态失败，请重试") from exc
+    finally:
+        _generation_tasks.pop(_gen_task_key, None)
+
+
+@router.post("/novels/{project_id}/chapters/{chapter_number}/cancel-generation")
+async def cancel_chapter_generation(
+    project_id: str,
+    chapter_number: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> dict:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    key = f"{project_id}:{chapter_number}"
+    task = _generation_tasks.pop(key, None)
+    if task and not task.done():
+        task.cancel()
+
+    chapter = await novel_service.get_or_create_chapter(project_id, chapter_number)
+    if chapter.status in ("generating", "evaluating", "selecting"):
+        chapter.status = "failed"
+        chapter.generation_progress = 0
+        chapter.generation_step = "cancelled"
+        chapter.generation_step_index = 0
+        await session.commit()
+
+    return {"cancelled": True}
 
 
 @router.post("/novels/{project_id}/chapters/select", response_model=NovelProjectSchema)

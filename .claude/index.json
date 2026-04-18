@@ -1,0 +1,96 @@
+{
+  "generated_at": "2026-04-18T20:35:46+08:00",
+  "project": "arboris-novel",
+  "root_claude_md": "CLAUDE.md",
+  "truncated": false,
+  "coverage": {
+    "estimated_total_files": 185,
+    "scanned_files": 38,
+    "coverage_percent": 21,
+    "note": "阶段 A/B 完成。服务层 50 个文件已识别目录结构但未逐一深读；测试文件极少（1个），视为低优先级。"
+  },
+  "modules": [
+    {
+      "path": "backend",
+      "language": "Python 3.11",
+      "entry": "backend/app/main.py",
+      "claude_md": "backend/CLAUDE.md",
+      "api_routers": [
+        "backend/app/api/routers/auth.py",
+        "backend/app/api/routers/novels.py",
+        "backend/app/api/routers/writer.py",
+        "backend/app/api/routers/admin.py",
+        "backend/app/api/routers/analytics.py",
+        "backend/app/api/routers/analytics_enhanced.py",
+        "backend/app/api/routers/foreshadowing.py",
+        "backend/app/api/routers/llm_config.py",
+        "backend/app/api/routers/optimizer.py",
+        "backend/app/api/routers/projects.py",
+        "backend/app/api/routers/review.py",
+        "backend/app/api/routers/updates.py"
+      ],
+      "key_services": [
+        "backend/app/services/pipeline_orchestrator.py",
+        "backend/app/services/llm_service.py",
+        "backend/app/services/novel_service.py",
+        "backend/app/services/vector_store_service.py",
+        "backend/app/services/embedding_service.py"
+      ],
+      "data_models": [
+        "backend/app/models/novel.py",
+        "backend/app/models/user.py",
+        "backend/app/models/foreshadowing.py",
+        "backend/app/models/memory_layer.py",
+        "backend/app/models/llm_config.py",
+        "backend/app/models/prompt.py"
+      ],
+      "config": "backend/app/core/config.py",
+      "db_session": "backend/app/db/session.py",
+      "tests": ["backend/app/services/test_phase4_integration.py"],
+      "gaps": ["no_pytest_config", "no_ci_pipeline", "unit_test_coverage_zero"]
+    },
+    {
+      "path": "frontend",
+      "language": "TypeScript / Vue 3",
+      "entry": "frontend/src/main.ts",
+      "claude_md": "frontend/CLAUDE.md",
+      "router": "frontend/src/router/index.ts",
+      "stores": [
+        "frontend/src/stores/auth.ts",
+        "frontend/src/stores/novel.ts"
+      ],
+      "api_clients": [
+        "frontend/src/api/novel.ts",
+        "frontend/src/api/admin.ts",
+        "frontend/src/api/llm.ts",
+        "frontend/src/api/updates.ts"
+      ],
+      "views_count": 12,
+      "components_count": 55,
+      "tests": [],
+      "gaps": ["no_vitest_config", "no_unit_tests", "no_e2e_tests"]
+    },
+    {
+      "path": "deploy",
+      "language": "Docker / Shell",
+      "entry": "deploy/docker-compose.yml",
+      "claude_md": "deploy/CLAUDE.md",
+      "dockerfile": "deploy/Dockerfile",
+      "env_template": "deploy/.env.example",
+      "gaps": []
+    }
+  ],
+  "ignored_paths": [
+    ".git/**",
+    ".venv/**",
+    "frontend/node_modules/**",
+    "backend/storage/*.db",
+    "**/__pycache__/**",
+    "*.pyc"
+  ],
+  "next_scan_priorities": [
+    "backend/app/services/*.py (逐一深读 50 个服务文件)",
+    "backend/app/schemas/*.py (完整 Pydantic schema)",
+    "backend/app/repositories/*.py (数据访问层完整实现)"
+  ]
+}

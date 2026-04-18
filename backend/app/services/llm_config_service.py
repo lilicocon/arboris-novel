@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from sqlalchemy.ext.asyncio import AsyncSession
 from openai import AsyncOpenAI
 
+from ..core.config import settings
 from ..models import LLMConfig
 from ..repositories.llm_config_repository import LLMConfigRepository
 from ..repositories.system_config_repository import SystemConfigRepository
@@ -121,9 +122,37 @@ class LLMConfigService:
         await self.session.commit()
         return LLMConfigRead.model_validate(instance)
 
-    async def get_config(self, user_id: int) -> Optional[LLMConfigRead]:
+    async def get_config(self, user_id: int) -> LLMConfigRead:
         instance = await self.repo.get_by_user(user_id)
-        return LLMConfigRead.model_validate(instance) if instance else None
+        if instance:
+            return LLMConfigRead.model_validate(instance)
+        # 仅返回模型名用于前端就绪检查，Key 和 URL 不透传给用户
+        return LLMConfigRead(
+            user_id=user_id,
+            llm_provider_url=None,
+            llm_provider_api_key=None,
+            llm_provider_model=settings.openai_model_name or None,
+            embedding_provider_url=None,
+            embedding_provider_api_key=None,
+            embedding_provider_model=settings.embedding_model or None,
+            embedding_provider_format=settings.embedding_provider if settings.embedding_provider in ("openai", "ollama") else "openai",
+        )
+
+    async def get_config_for_role(
+        self,
+        user_id: int,
+        role: str = "writer",
+    ) -> LLMConfigRead:
+        """Return the LLM config appropriate for a given pipeline role.
+
+        Supported roles: writer, reviewer, optimizer, summarizer.
+        Currently all roles map to the single user config; this method is the
+        hook point for per-role model routing in future iterations.
+        """
+        base = await self.get_config(user_id)
+        # Role-specific overrides can be wired here (e.g. lighter models for
+        # reviewer/optimizer/summarizer roles) once env vars are added.
+        return base
 
     async def delete_config(self, user_id: int) -> bool:
         instance = await self.repo.get_by_user(user_id)

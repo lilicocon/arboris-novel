@@ -68,6 +68,7 @@ export interface Blueprint {
   characters?: Character[]
   relationships?: any[]
   chapter_outline?: ChapterOutline[]
+  chapter_length?: number | null
 }
 
 export interface Character {
@@ -144,6 +145,36 @@ export interface DeleteNovelsResponse {
   message: string
 }
 
+export interface WriterFlowConfig {
+  preset?: 'basic' | 'enhanced' | 'ultimate' | 'custom'
+  versions?: number
+  enable_preview?: boolean
+  enable_optimizer?: boolean
+  enable_consistency?: boolean
+  enable_enrichment?: boolean
+  async_finalize?: boolean
+  enable_rag?: boolean
+  rag_mode?: 'simple' | 'two_stage'
+  target_word_count?: number
+}
+
+export interface AdvancedGenerateVariant {
+  index: number
+  version_id: number
+  content: string
+  metadata?: Record<string, any> | null
+}
+
+export interface AdvancedGenerateResponse {
+  project_id: string
+  chapter_number: number
+  preset: string
+  best_version_index: number
+  variants: AdvancedGenerateVariant[]
+  review_summaries: Record<string, any>
+  debug_metadata?: Record<string, any> | null
+}
+
 // 内容型Section（对应后端NovelSectionType枚举）
 export type NovelSectionType = 'overview' | 'world_setting' | 'characters' | 'relationships' | 'chapter_outline' | 'chapters'
 
@@ -161,6 +192,7 @@ export interface NovelSectionResponse {
 // API 函数
 const NOVELS_BASE = `${API_BASE_URL}${API_PREFIX}/novels`
 const WRITER_PREFIX = '/api/writer'
+const WRITER_API_BASE = `${API_BASE_URL}${WRITER_PREFIX}`
 const WRITER_BASE = `${API_BASE_URL}${WRITER_PREFIX}/novels`
 
 export class NovelAPI {
@@ -223,10 +255,36 @@ export class NovelAPI {
     })
   }
 
-  static async generateChapter(projectId: string, chapterNumber: number): Promise<NovelProject> {
+  static async generateChapter(projectId: string, chapterNumber: number, targetWordCount?: number): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/generate`, {
       method: 'POST',
-      body: JSON.stringify({ chapter_number: chapterNumber })
+      body: JSON.stringify({
+        chapter_number: chapterNumber,
+        ...(targetWordCount ? { target_word_count: targetWordCount } : {})
+      })
+    })
+  }
+
+  static async generateChapterAdvanced(
+    projectId: string,
+    chapterNumber: number,
+    flowConfig: WriterFlowConfig,
+    writingNotes?: string
+  ): Promise<AdvancedGenerateResponse> {
+    return request(`${WRITER_API_BASE}/advanced/generate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        project_id: projectId,
+        chapter_number: chapterNumber,
+        ...(writingNotes ? { writing_notes: writingNotes } : {}),
+        flow_config: flowConfig
+      })
+    })
+  }
+
+  static async cancelChapterGeneration(projectId: string, chapterNumber: number): Promise<void> {
+    await request(`${WRITER_BASE}/${projectId}/chapters/${chapterNumber}/cancel-generation`, {
+      method: 'POST'
     })
   }
 

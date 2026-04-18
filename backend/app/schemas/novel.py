@@ -88,6 +88,7 @@ class Blueprint(BaseModel):
     characters: List[Dict[str, Any]] = []
     relationships: List[Relationship] = []
     chapter_outline: List[ChapterOutline] = []
+    chapter_length: Optional[int] = None
     
     class Config:
         from_attributes = True
@@ -142,6 +143,7 @@ class NovelSectionResponse(BaseModel):
 class GenerateChapterRequest(BaseModel):
     chapter_number: int
     writing_notes: Optional[str] = Field(default=None, description="章节额外写作指令")
+    target_word_count: Optional[int] = Field(default=None, description="目标字数，不传则使用蓝图或默认值")
 
 
 class FlowConfig(BaseModel):
@@ -154,6 +156,7 @@ class FlowConfig(BaseModel):
     async_finalize: Optional[bool] = Field(default=None, description="是否异步定稿")
     enable_rag: Optional[bool] = Field(default=None, description="是否启用 RAG")
     rag_mode: Optional[str] = Field(default=None, description="simple|two_stage")
+    target_word_count: Optional[int] = Field(default=None, description="目标字数，不传则使用蓝图或默认值")
 
 
 class AdvancedGenerateRequest(BaseModel):
@@ -224,6 +227,7 @@ class BlueprintPatch(BaseModel):
     characters: Optional[List[Dict[str, Any]]] = None
     relationships: Optional[List[Relationship]] = None
     chapter_outline: Optional[List[ChapterOutline]] = None
+    chapter_length: Optional[int] = None
 
 
 class EditChapterRequest(BaseModel):

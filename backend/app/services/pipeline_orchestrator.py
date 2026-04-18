@@ -32,6 +32,7 @@ from ..services.reader_simulator_service import ReaderSimulatorService, ReaderTy
 from ..services.self_critique_service import CritiqueDimension, SelfCritiqueService
 from ..services.vector_store_service import VectorStoreService
 from ..services.writer_context_builder import WriterContextBuilder
+from ..services.context_budgeter import ContextBudgeter
 from ..utils.json_utils import remove_think_tags, unwrap_markdown_json
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,21 @@ def _clamp_version_count(value: int) -> int:
 DEFAULT_CHAPTER_TARGET_WORD_COUNT = 3000
 MIN_CHAPTER_WORD_COUNT = 2200
 WRITER_GENERATION_MAX_TOKENS = 7000
+
+
+def _resolve_target_word_count(
+    request_target: Optional[int],
+    blueprint_chapter_length: Optional[int],
+) -> int:
+    if request_target and request_target > 0:
+        return request_target
+    if blueprint_chapter_length and blueprint_chapter_length > 0:
+        return blueprint_chapter_length
+    return DEFAULT_CHAPTER_TARGET_WORD_COUNT
+
+
+def _calc_max_tokens(target_word_count: int) -> int:
+    return min(max(target_word_count * 2, WRITER_GENERATION_MAX_TOKENS), 32000)
 
 
 @dataclass
@@ -92,6 +108,10 @@ class PipelineOrchestrator:
         config = await self._resolve_config(flow_config)
         project = await self.novel_service.ensure_project_owner(project_id, user_id)
 
+        request_target = None
+        if flow_config and flow_config.get("target_word_count"):
+            request_target = flow_config["target_word_count"]
+
         outline = await self.novel_service.get_outline(project_id, chapter_number)
         if not outline:
             raise HTTPException(status_code=404, detail="蓝图中未找到对应章节纲要")
@@ -119,6 +139,13 @@ class PipelineOrchestrator:
 
         project_schema = await self.novel_service._serialize_project(project)
         blueprint_dict = self._normalize_blueprint(project_schema.blueprint.model_dump())
+
+        target_word_count = _resolve_target_word_count(
+            request_target=request_target,
+            blueprint_chapter_length=blueprint_dict.get("chapter_length"),
+        )
+        min_word_count = int(target_word_count * 0.73)
+        max_tokens = _calc_max_tokens(target_word_count)
 
         outline_title = outline.title or f"第{outline.chapter_number}章"
         outline_summary = outline.summary or "暂无摘要"
@@ -232,11 +259,14 @@ class PipelineOrchestrator:
             forbidden_characters=forbidden_characters,
             project_memory_text=project_memory_text,
             memory_context=memory_context,
+            target_word_count=target_word_count,
+            min_word_count=min_word_count,
         )
 
         if enhanced_flow and enhanced_context:
             prompt_sections = enhanced_flow.build_enhanced_prompt_sections(prompt_sections, enhanced_context)
 
+        prompt_sections = ContextBudgeter(total_budget_tokens=16000).fit(prompt_sections)
         prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
         logger.debug("Pipeline prompt length: %s chars", len(prompt_input))
         chapter.generation_progress = 55
@@ -272,6 +302,8 @@ class PipelineOrchestrator:
                     memory_context=memory_context,
                     enhanced_context=enhanced_context,
                     config=config,
+                    max_tokens=max_tokens,
+                    target_word_count=target_word_count,
                 )
             )
             chapter.generation_progress = 55 + int(((idx + 1) / max(version_count, 1)) * 25)
@@ -349,6 +381,7 @@ class PipelineOrchestrator:
                 best_content, enrichment_report = await self._run_enrichment(
                     best_content,
                     user_id=user_id,
+                    target_word_count=target_word_count,
                 )
                 if enrichment_report:
                     review_summaries["enrichment"] = enrichment_report
@@ -704,6 +737,8 @@ class PipelineOrchestrator:
         forbidden_characters: List[str],
         project_memory_text: Optional[str],
         memory_context: Optional[str],
+        target_word_count: int = DEFAULT_CHAPTER_TARGET_WORD_COUNT,
+        min_word_count: int = MIN_CHAPTER_WORD_COUNT,
     ) -> List[Tuple[str, str]]:
         blueprint_text = json.dumps(writer_blueprint, ensure_ascii=False, indent=2)
         mission_text = json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无导演脚本"
@@ -741,8 +776,8 @@ class PipelineOrchestrator:
                 (
                     "[篇幅与排版要求]",
                     (
-                        f"目标字数：约 {DEFAULT_CHAPTER_TARGET_WORD_COUNT} 字，"
-                        f"不得少于 {MIN_CHAPTER_WORD_COUNT} 字。"
+                        f"目标字数：约 {target_word_count} 字，"
+                        f"不得少于 {min_word_count} 字。"
                         "段落清晰，尽量保持自然段首行空两格。"
                     ),
                 ),
@@ -792,6 +827,8 @@ class PipelineOrchestrator:
         memory_context: Optional[str],
         enhanced_context: Optional[Dict[str, Any]],
         config: PipelineConfig,
+        max_tokens: int = WRITER_GENERATION_MAX_TOKENS,
+        target_word_count: int = DEFAULT_CHAPTER_TARGET_WORD_COUNT,
     ) -> Dict[str, Any]:
         metadata: Dict[str, Any] = {
             "chapter_mission": chapter_mission,
@@ -811,6 +848,7 @@ class PipelineOrchestrator:
                 style_hint=style_hint,
                 enhanced_context=enhanced_context,
                 user_id=user_id,
+                target_word_count=target_word_count,
             )
             metadata["preview"] = preview_meta
 
@@ -819,17 +857,12 @@ class PipelineOrchestrator:
             if style_hint:
                 final_prompt_input += f"\n\n[版本风格提示]\n{style_hint}"
 
-            response = await self.llm_service.get_llm_response(
+            content = await self._generate_with_gradient_retry(
                 system_prompt=writer_prompt,
-                conversation_history=[{"role": "user", "content": final_prompt_input}],
-                temperature=0.9,
+                user_content=final_prompt_input,
                 user_id=user_id,
-                timeout=600.0,
-                response_format=None,
-                max_tokens=WRITER_GENERATION_MAX_TOKENS,
+                max_tokens=max_tokens,
             )
-            cleaned = remove_think_tags(response)
-            content = unwrap_markdown_json(cleaned)
 
         guardrail_result = self.guardrails.check(
             generated_text=content,
@@ -870,6 +903,49 @@ class PipelineOrchestrator:
             "metadata": metadata,
         }
 
+    async def _generate_with_gradient_retry(
+        self,
+        *,
+        system_prompt: str,
+        user_content: str,
+        user_id: int,
+        max_tokens: int,
+        base_temperature: float = 0.9,
+    ) -> str:
+        """LLM call with gradient retry: temperature bump → reduced context."""
+        _RETRY_TEMPS = [base_temperature, min(base_temperature + 0.1, 1.0)]
+        last_exc: Optional[Exception] = None
+
+        for attempt, temp in enumerate(_RETRY_TEMPS):
+            try:
+                response = await self.llm_service.get_llm_response(
+                    system_prompt=system_prompt,
+                    conversation_history=[{"role": "user", "content": user_content}],
+                    temperature=temp,
+                    user_id=user_id,
+                    timeout=600.0,
+                    response_format=None,
+                    max_tokens=max_tokens,
+                )
+                cleaned = remove_think_tags(response)
+                content = unwrap_markdown_json(cleaned)
+                if content and len(content) >= 100:
+                    return content
+                last_exc = HTTPException(
+                    status_code=502,
+                    detail="写作模型返回内容过短或为空，请重试",
+                )
+                logger.warning(
+                    "Generation attempt %d returned short/empty content (%d chars), retrying",
+                    attempt + 1,
+                    len(content),
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("Generation attempt %d failed: %s", attempt + 1, exc)
+
+        raise last_exc or HTTPException(status_code=502, detail="写作模型未返回有效内容，请重试")
+
     async def _generate_with_preview(
         self,
         *,
@@ -882,6 +958,7 @@ class PipelineOrchestrator:
         style_hint: Optional[str],
         enhanced_context: Optional[Dict[str, Any]],
         user_id: int,
+        target_word_count: int = DEFAULT_CHAPTER_TARGET_WORD_COUNT,
     ) -> Tuple[str, Dict[str, Any]]:
         preview_service = PreviewGenerationService(self.session, self.llm_service, self.prompt_service)
         blueprint_context = json.dumps(writer_blueprint, ensure_ascii=False, indent=2)
@@ -905,6 +982,7 @@ class PipelineOrchestrator:
             memory_context=memory_context or "（无记忆层上下文）",
             style_hint=style_hint or "",
             user_id=user_id,
+            target_word_count=target_word_count,
         )
 
         return preview_result.get("full_chapter", ""), preview_result

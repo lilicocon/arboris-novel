@@ -1,5 +1,7 @@
 # AIMETA P=数据库初始化_创建表和默认数据|R=创建表_初始化管理员|NR=不含业务逻辑|E=init_db|X=internal|A=初始化函数|D=sqlalchemy|S=db|RD=./README.ai
 import logging
+import secrets
+import string
 
 from pathlib import Path
 
@@ -37,10 +39,24 @@ async def init_db() -> None:
         admin_exists = await session.execute(select(User).where(User.is_admin.is_(True)))
         if not admin_exists.scalars().first():
             logger.warning("未检测到管理员账号，正在创建默认管理员 ...")
+            raw_password = settings.admin_default_password
+            if not raw_password:
+                alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+                raw_password = "".join(secrets.choice(alphabet) for _ in range(16))
+                msg = (
+                    f"\n{'='*60}\n"
+                    f"  默认管理员随机密码（首次启动自动生成）\n"
+                    f"  用户名: {settings.admin_default_username}\n"
+                    f"  密  码: {raw_password}\n"
+                    f"  请登录后立即修改！\n"
+                    f"{'='*60}"
+                )
+                print(msg, flush=True)
+                logger.warning("默认管理员密码已自动生成，请查看启动日志获取凭证")
             admin_user = User(
                 username=settings.admin_default_username,
                 email=settings.admin_default_email,
-                hashed_password=hash_password(settings.admin_default_password),
+                hashed_password=hash_password(raw_password),
                 is_admin=True,
             )
 
@@ -162,6 +178,11 @@ async def _ensure_schema_updates() -> None:
                         "WHERE embedding_provider_format IS NULL OR TRIM(embedding_provider_format) = ''"
                     )
                 )
+
+            if "novel_blueprints" in table_names:
+                bp_columns = {col["name"] for col in inspector.get_columns("novel_blueprints")}
+                if "chapter_length" not in bp_columns:
+                    sync_conn.execute(text("ALTER TABLE novel_blueprints ADD COLUMN chapter_length INTEGER"))
         await conn.run_sync(_upgrade)
 
 
@@ -170,12 +191,17 @@ async def _ensure_default_prompts(session: AsyncSession) -> None:
     if not prompts_dir.is_dir():
         return
 
-    result = await session.execute(select(Prompt.name))
-    existing_names = set(result.scalars().all())
+    result = await session.execute(select(Prompt.name, Prompt.content))
+    existing: dict[str, str] = {row[0]: row[1] for row in result.all()}
 
     for prompt_file in sorted(prompts_dir.glob("*.md")):
         name = prompt_file.stem
-        if name in existing_names:
-            continue
         content = prompt_file.read_text(encoding="utf-8")
-        session.add(Prompt(name=name, content=content))
+        if name not in existing:
+            session.add(Prompt(name=name, content=content))
+        elif existing[name] != content:
+            result2 = await session.execute(select(Prompt).where(Prompt.name == name))
+            prompt_row = result2.scalar_one_or_none()
+            if prompt_row is not None:
+                prompt_row.content = content
+                logger.info("Updated prompt '%s' to match file content", name)

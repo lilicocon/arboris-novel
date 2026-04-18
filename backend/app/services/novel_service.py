@@ -79,7 +79,7 @@ def _clean_string(text: str, parse_json: bool = True) -> str:
     )
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, inspect, select, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -307,6 +307,7 @@ class NovelService:
         record.one_sentence_summary = blueprint.one_sentence_summary
         record.full_synopsis = blueprint.full_synopsis
         record.world_setting = blueprint.world_setting
+        record.chapter_length = blueprint.chapter_length
 
         await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
         for index, data in enumerate(blueprint.characters):
@@ -417,6 +418,9 @@ class NovelService:
                         summary=outline.get("summary"),
                     )
                 )
+        if "chapter_length" in patch:
+            val = patch["chapter_length"]
+            blueprint.chapter_length = int(val) if val not in (None, "") else None
         await self.session.commit()
         await self._touch_project(project_id)
 
@@ -643,6 +647,16 @@ class NovelService:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
+    async def _refresh_chapter_if_needed(self, chapter: Chapter, attribute_names: List[str]) -> None:
+        state = inspect(chapter)
+        pending = [
+            name
+            for name in attribute_names
+            if name in state.expired_attributes or name not in state.dict
+        ]
+        if pending:
+            await self.session.refresh(chapter, attribute_names=pending)
+
     async def _auto_fail_stale_in_progress_chapters(self, project_id: str, chapters: List[Chapter]) -> None:
         if not chapters:
             return
@@ -653,6 +667,16 @@ class NovelService:
         for chapter in chapters:
             if chapter is None:
                 continue
+            await self._refresh_chapter_if_needed(
+                chapter,
+                [
+                    "status",
+                    "updated_at",
+                    "generation_started_at",
+                    "generation_step_total",
+                    "chapter_number",
+                ],
+            )
             if chapter.status not in (
                 ChapterGenerationStatus.GENERATING.value,
                 ChapterGenerationStatus.EVALUATING.value,
@@ -735,6 +759,7 @@ class NovelService:
                     )
                     for outline in sorted(project.outlines, key=lambda o: o.chapter_number)
                 ],
+                chapter_length=blueprint_obj.chapter_length,
             )
         return Blueprint(
             title="",
@@ -768,6 +793,7 @@ class NovelService:
                 "style": blueprint.style,
                 "tone": blueprint.tone,
                 "full_synopsis": blueprint.full_synopsis,
+                "chapter_length": blueprint.chapter_length,
                 "updated_at": project.updated_at.isoformat() if project.updated_at else None,
             }
         elif section == NovelSectionType.WORLD_SETTING:

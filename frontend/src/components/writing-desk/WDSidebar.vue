@@ -51,6 +51,19 @@
                 <div class="md-label-small md-on-surface-variant">关系</div>
               </div>
             </div>
+            <div class="md-card md-card-outlined p-2" style="border-radius: var(--md-radius-md);">
+              <label class="md-label-small md-on-surface-variant block mb-1">本次生成字数</label>
+              <input
+                v-model.number="targetWordCount"
+                type="number"
+                min="500"
+                max="20000"
+                step="500"
+                placeholder="默认 3000"
+                class="w-full bg-transparent md-body-small text-center outline-none"
+                style="color: var(--md-on-surface);"
+              />
+            </div>
           </div>
         </div>
 
@@ -286,6 +299,7 @@ const emit = defineEmits(['closeSidebar', 'selectChapter', 'generateChapter', 'e
 const selectedForDeletion = ref<number[]>([])
 const listContainer = ref<HTMLElement | null>(null)
 const chapterRefs = ref<Record<number, HTMLElement | null>>({})
+const targetWordCount = ref<number | null>(props.project?.blueprint?.chapter_length || null)
 
 const characterCount = computed(() => {
   return props.project?.blueprint?.characters?.length || 0
@@ -346,7 +360,7 @@ function handleDeleteSelected() {
 async function confirmGenerateChapter(chapterNumber: number) {
   const confirmed = await globalAlert.showConfirm('重新生成会覆盖当前章节的生成结果，确定继续吗？', '重新生成确认')
   if (confirmed) {
-    emit('generateChapter', chapterNumber)
+    emit('generateChapter', chapterNumber, targetWordCount.value || undefined)
   }
 }
 

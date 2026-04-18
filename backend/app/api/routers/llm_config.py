@@ -27,9 +27,6 @@ async def read_llm_config(
     current_user: UserInDB = Depends(get_current_user),
 ) -> LLMConfigRead:
     config = await service.get_config(current_user.id)
-    if not config:
-        logger.warning("用户 %s 尚未设置 LLM 配置", current_user.id)
-        raise HTTPException(status_code=404, detail="尚未设置自定义配置")
     logger.info("用户 %s 获取 LLM 配置", current_user.id)
     return config
 

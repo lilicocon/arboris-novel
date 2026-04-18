@@ -53,11 +53,13 @@
 
 ## 输出格式
 
+**输出纪律：** 输出必须是单个合法 JSON 对象，不要 markdown 代码围栏、不要 `<think>` 标签、不要任何前言/后语/总结。`foreshadowings_to_develop[].id` **必须严格从上方「活跃伏笔列表」中选取，严禁自造 id；若无合适伏笔请返回空数组。**
+
 ```json
 {
   "foreshadowings_to_develop": [
     {
-      "id": "伏笔ID",
+      "id": "必须来自活跃伏笔列表的 id，严禁自造",
       "name": "伏笔名称",
       "reason": "需要发展的原因",
       "urgency": "high/medium/low",
