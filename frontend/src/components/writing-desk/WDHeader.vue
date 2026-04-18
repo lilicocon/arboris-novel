@@ -24,6 +24,16 @@
 
         <!-- 右侧：操作按钮 -->
         <div class="flex items-center gap-1 sm:gap-2">
+          <button
+            @click="$emit('exportTxt')"
+            :disabled="!canExportTxt"
+            class="md-btn md-btn-text md-ripple flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M3 14a1 1 0 011-1h3v-3a1 1 0 112 0v3h3a1 1 0 110 2H9v3a1 1 0 11-2 0v-3H4a1 1 0 01-1-1zm11-9H9a1 1 0 110-2h5a2 2 0 012 2v5a1 1 0 11-2 0V5z" clip-rule="evenodd"></path>
+            </svg>
+            <span class="hidden md:inline">导出 TXT</span>
+          </button>
           <button @click="$emit('viewProjectDetail')" class="md-btn md-btn-text md-ripple flex items-center gap-2">
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
               <path d="M10 12a2 2 0 100-4 2 2 0 000 4z"></path>
@@ -70,9 +80,10 @@ interface Props {
   progress: number
   completedChapters: number
   totalChapters: number
+  canExportTxt: boolean
 }
 
 defineProps<Props>()
 
-defineEmits(['goBack', 'viewProjectDetail', 'toggleSidebar'])
+defineEmits(['goBack', 'viewProjectDetail', 'toggleSidebar', 'exportTxt'])
 </script>

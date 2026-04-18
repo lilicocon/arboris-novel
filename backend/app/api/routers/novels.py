@@ -1,9 +1,11 @@
 # AIMETA P=小说API_项目和章节管理|R=小说CRUD_章节管理|NR=不含内容生成|E=route:GET_POST_/api/novels/*|X=http|A=小说CRUD_章节|D=fastapi,sqlalchemy|S=db|RD=./README.ai
 import json
 import logging
+import re
 from typing import Dict, List
+from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.dependencies import get_current_user
@@ -23,7 +25,7 @@ from ...schemas.novel import (
 from ...schemas.user import UserInDB
 from ...services.import_service import ImportService
 from ...services.llm_service import LLMService
-from ...services.novel_service import NovelService
+from ...services.novel_service import NovelService, build_confirmed_chapters_txt
 from ...services.prompt_service import PromptService
 from ...utils.json_utils import remove_think_tags, sanitize_json_like_text, unwrap_markdown_json
 
@@ -53,6 +55,11 @@ def _ensure_prompt(prompt: str | None, name: str) -> str:
     if not prompt:
         raise HTTPException(status_code=500, detail=f"未配置名为 {name} 的提示词，请联系管理员")
     return prompt
+
+
+def _sanitize_download_filename(title: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", (title or "").strip())
+    return cleaned or "novel"
 
 
 @router.post("", response_model=NovelProjectSchema, status_code=status.HTTP_201_CREATED)
@@ -127,6 +134,59 @@ async def get_chapter(
     novel_service = NovelService(session)
     logger.info("用户 %s 获取项目 %s 第 %s 章", current_user.id, project_id, chapter_number)
     return await novel_service.get_chapter_schema(project_id, current_user.id, chapter_number)
+
+
+@router.get("/{project_id}/export/txt")
+async def export_confirmed_chapters_txt(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Response:
+    novel_service = NovelService(session)
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    outlines_map = {outline.chapter_number: outline for outline in project.outlines}
+    confirmed_chapters: List[Dict[str, str | int]] = []
+    for chapter in project.chapters:
+        if chapter.status != "successful":
+            continue
+
+        selected_version = None
+        if chapter.selected_version_id and chapter.versions:
+            selected_version = next(
+                (item for item in chapter.versions if item.id == chapter.selected_version_id),
+                None,
+            )
+        if selected_version is None and chapter.selected_version:
+            selected_version = chapter.selected_version
+
+        if not selected_version or not selected_version.content or not selected_version.content.strip():
+            continue
+
+        outline = outlines_map.get(chapter.chapter_number)
+        confirmed_chapters.append(
+            {
+                "chapter_number": chapter.chapter_number,
+                "title": outline.title if outline and outline.title else f"第{chapter.chapter_number}章",
+                "content": selected_version.content,
+            }
+        )
+
+    txt_content = build_confirmed_chapters_txt(confirmed_chapters)
+    if not txt_content:
+        raise HTTPException(status_code=400, detail="当前没有可导出的已完成章节")
+
+    safe_title = _sanitize_download_filename(project.title)
+    filename = f"{safe_title}.txt"
+    encoded_filename = quote(filename)
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"novel.txt\"; filename*=UTF-8''{encoded_filename}"
+    }
+    return Response(
+        content=txt_content,
+        media_type="text/plain; charset=utf-8",
+        headers=headers,
+    )
 
 
 @router.delete("", status_code=status.HTTP_200_OK)

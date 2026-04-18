@@ -37,6 +37,32 @@ const request = async (url: string, options: RequestInit = {}) => {
   return response.json()
 }
 
+const requestBlob = async (url: string, options: RequestInit = {}): Promise<Blob> => {
+  const authStore = useAuthStore()
+  const headers = new Headers({
+    ...options.headers
+  })
+
+  if (authStore.isAuthenticated && authStore.token) {
+    headers.set('Authorization', `Bearer ${authStore.token}`)
+  }
+
+  const response = await fetch(url, { ...options, headers })
+
+  if (response.status === 401) {
+    authStore.logout()
+    router.push('/login')
+    throw new Error('会话已过期，请重新登录')
+  }
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
+  }
+
+  return response.blob()
+}
+
 // 类型定义
 export interface NovelProject {
   id: string
@@ -175,6 +201,13 @@ export interface AdvancedGenerateResponse {
   debug_metadata?: Record<string, any> | null
 }
 
+export interface FinalizeChapterResponse {
+  project_id: string
+  chapter_number: number
+  selected_version_id: number
+  result: Record<string, any>
+}
+
 // 内容型Section（对应后端NovelSectionType枚举）
 export type NovelSectionType = 'overview' | 'world_setting' | 'characters' | 'relationships' | 'chapter_outline' | 'chapters'
 
@@ -307,6 +340,25 @@ export class NovelAPI {
         version_index: versionIndex
       })
     })
+  }
+
+  static async finalizeChapter(
+    projectId: string,
+    chapterNumber: number,
+    selectedVersionId: number
+  ): Promise<FinalizeChapterResponse> {
+    return request(`${WRITER_API_BASE}/chapters/${chapterNumber}/finalize`, {
+      method: 'POST',
+      body: JSON.stringify({
+        project_id: projectId,
+        selected_version_id: selectedVersionId,
+        skip_vector_update: false
+      })
+    })
+  }
+
+  static async downloadConfirmedChaptersTxt(projectId: string): Promise<Blob> {
+    return requestBlob(`${NOVELS_BASE}/${projectId}/export/txt`)
   }
 
   static async getAllNovels(): Promise<NovelProjectSummary[]> {

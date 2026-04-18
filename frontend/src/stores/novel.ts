@@ -8,6 +8,7 @@ import type {
   ChapterOutline,
   ConverseResponse,
   DeleteNovelsResponse,
+  FinalizeChapterResponse,
   NovelProject,
   NovelProjectSummary
 } from '@/api/novel'
@@ -171,7 +172,6 @@ export const useNovelStore = defineStore('novel', () => {
         chapterNumber,
         {
           preset: 'basic',
-          enable_enrichment: true,
           target_word_count: resolvedTargetWordCount
         }
       )
@@ -211,6 +211,32 @@ export const useNovelStore = defineStore('novel', () => {
       currentProject.value = updatedProject // 更新 store
     } catch (err) {
       error.value = err instanceof Error ? err.message : '选择章节版本失败'
+      throw err
+    }
+  }
+
+  async function finalizeChapter(chapterNumber: number, selectedVersionId: number): Promise<FinalizeChapterResponse> {
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      const response = await NovelAPI.finalizeChapter(
+        currentProject.value.id,
+        chapterNumber,
+        selectedVersionId
+      )
+      if (response.result?.success === false) {
+        throw new Error(
+          typeof response.result.error === 'string' && response.result.error
+            ? response.result.error
+            : '章节定稿失败'
+        )
+      }
+      await loadChapter(chapterNumber)
+      return response
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '章节定稿失败'
       throw err
     }
   }
@@ -381,6 +407,7 @@ export const useNovelStore = defineStore('novel', () => {
     generateChapter,
     evaluateChapter,
     selectChapterVersion,
+    finalizeChapter,
     deleteProjects,
     updateChapterOutline,
     deleteChapter,

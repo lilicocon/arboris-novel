@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -71,7 +72,7 @@ class PipelineConfig:
     enable_preview: bool = False
     enable_optimizer: bool = False
     enable_consistency: bool = False
-    enable_enrichment: bool = False
+    enable_enrichment: Optional[bool] = None
     async_finalize: bool = False
     enable_constitution: bool = False
     enable_persona: bool = False
@@ -325,8 +326,13 @@ class PipelineOrchestrator:
         if ai_review_result:
             review_summaries["ai_review"] = ai_review_result
 
+        ai_best_version_index = best_version_index
         if versions:
-            best_version_index = max(0, min(best_version_index, len(versions) - 1))
+            best_version_index = self._select_preferred_version_index(
+                versions=versions,
+                ai_best_version_index=best_version_index,
+                target_word_count=target_word_count,
+            )
         else:
             best_version_index = 0
 
@@ -377,7 +383,11 @@ class PipelineOrchestrator:
                 best_content, optimizer_report = await self._run_optimizer(best_content, user_id=user_id)
                 review_summaries["optimizer"] = optimizer_report
 
-            if config.enable_enrichment:
+            if self._should_run_enrichment(
+                chapter_content=best_content,
+                target_word_count=target_word_count,
+                configured_enrichment=config.enable_enrichment,
+            ):
                 best_content, enrichment_report = await self._run_enrichment(
                     best_content,
                     user_id=user_id,
@@ -418,6 +428,11 @@ class PipelineOrchestrator:
                 "version_count": version_count,
                 "stages": self._build_stage_flags(config),
                 "retrieval_stats": rag_stats,
+                "ai_best_version_index": ai_best_version_index,
+                "selected_version_lengths": [
+                    self._count_text_length(item.get("content", ""))
+                    for item in versions
+                ],
             },
         }
 
@@ -468,6 +483,89 @@ class PipelineOrchestrator:
             config.enable_self_critique = False
 
         return config
+
+    @staticmethod
+    def _count_text_length(text: str) -> int:
+        return len(re.sub(r"\s+", "", text or ""))
+
+    @classmethod
+    def _select_preferred_version_index(
+        cls,
+        *,
+        versions: List[Dict[str, Any]],
+        ai_best_version_index: int,
+        target_word_count: int,
+    ) -> int:
+        if not versions:
+            return 0
+
+        normalized_ai_index = max(0, min(ai_best_version_index, len(versions) - 1))
+        if target_word_count <= 0:
+            return normalized_ai_index
+
+        lengths = [cls._count_text_length(item.get("content", "")) for item in versions]
+        if lengths[normalized_ai_index] >= target_word_count:
+            return normalized_ai_index
+
+        reached_target = [
+            (index, length)
+            for index, length in enumerate(lengths)
+            if length >= target_word_count
+        ]
+        if reached_target:
+            return min(
+                reached_target,
+                key=lambda item: (item[1] - target_word_count, item[0]),
+            )[0]
+
+        return max(
+            range(len(lengths)),
+            key=lambda index: (lengths[index], index == normalized_ai_index, -index),
+        )
+
+    @classmethod
+    def _should_run_enrichment(
+        cls,
+        *,
+        chapter_content: str,
+        target_word_count: int,
+        configured_enrichment: Optional[bool],
+        auto_threshold: float = 0.7,
+    ) -> bool:
+        if configured_enrichment is True:
+            return True
+        if configured_enrichment is False:
+            return False
+        if target_word_count <= 0:
+            return False
+        return cls._count_text_length(chapter_content) < target_word_count * auto_threshold
+
+    @staticmethod
+    def _sanitize_enrichment_output(text: str) -> str:
+        if not text:
+            return text
+
+        cleaned_lines: List[str] = []
+        for raw_line in text.strip().splitlines():
+            line = raw_line.strip()
+            if not line:
+                cleaned_lines.append("")
+                continue
+            if re.fullmatch(r"-{3,}", line):
+                continue
+            if "以下是" in line and "完整章节内容" in line:
+                continue
+            if re.match(r"^[（(]\s*注[:：]", line):
+                continue
+            if re.fullmatch(r"[（(]本章完[）)]", line):
+                continue
+            if "实际字数约" in line:
+                continue
+            cleaned_lines.append(raw_line.rstrip())
+
+        cleaned = "\n".join(cleaned_lines).strip()
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
 
     async def _resolve_version_count(self, requested_count: Optional[int]) -> int:
         if requested_count:
@@ -1226,21 +1324,45 @@ class PipelineOrchestrator:
         *,
         user_id: int,
         target_word_count: int = 3000,
+        target_ratio: float = 0.9,
+        max_rounds: int = 5,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
         service = EnrichmentService(self.session, self.llm_service)
-        result = await service.check_and_enrich(
-            chapter_text=chapter_content,
-            target_word_count=target_word_count,
-            user_id=user_id,
-        )
-        if not result:
+        current_content = self._sanitize_enrichment_output(chapter_content)
+        original_word_count = self._count_text_length(current_content)
+        current_word_count = original_word_count
+        threshold_word_count = int(target_word_count * target_ratio)
+        rounds = 0
+
+        while current_word_count < threshold_word_count and rounds < max_rounds:
+            result = await service.check_and_enrich(
+                chapter_text=current_content,
+                target_word_count=target_word_count,
+                user_id=user_id,
+                threshold=target_ratio,
+            )
+            if not result:
+                break
+
+            candidate_content = self._sanitize_enrichment_output(result.enriched_content)
+            candidate_word_count = self._count_text_length(candidate_content)
+            rounds += 1
+
+            if candidate_word_count <= current_word_count:
+                break
+
+            current_content = candidate_content
+            current_word_count = candidate_word_count
+
+        if current_word_count <= original_word_count:
             return chapter_content, None
 
-        return result.enriched_content, {
-            "original_word_count": result.original_word_count,
-            "enriched_word_count": result.enriched_word_count,
-            "enrichment_ratio": result.enrichment_ratio,
-            "enrichment_type": result.enrichment_type,
+        return current_content, {
+            "original_word_count": original_word_count,
+            "enriched_word_count": current_word_count,
+            "enrichment_ratio": current_word_count / original_word_count if original_word_count > 0 else 1.0,
+            "enrichment_type": "iterative",
+            "rounds": rounds,
         }
 
     @staticmethod
@@ -1249,7 +1371,7 @@ class PipelineOrchestrator:
             "preview": config.enable_preview,
             "optimizer": config.enable_optimizer,
             "consistency": config.enable_consistency,
-            "enrichment": config.enable_enrichment,
+            "enrichment": config.enable_enrichment is True,
             "constitution": config.enable_constitution,
             "persona": config.enable_persona,
             "six_dimension": config.enable_six_dimension,

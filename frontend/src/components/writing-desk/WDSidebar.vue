@@ -55,6 +55,7 @@
               <label class="md-label-small md-on-surface-variant block mb-1">本次生成字数</label>
               <input
                 v-model.number="targetWordCount"
+                :disabled="isBatchGenerating"
                 type="number"
                 min="500"
                 max="20000"
@@ -63,6 +64,47 @@
                 class="w-full bg-transparent md-body-small text-center outline-none"
                 style="color: var(--md-on-surface);"
               />
+            </div>
+            <div class="md-card md-card-outlined p-3 space-y-3" style="border-radius: var(--md-radius-md);">
+              <div class="flex items-center justify-between gap-2">
+                <div>
+                  <h3 class="md-label-large font-semibold">连续生成</h3>
+                  <p class="md-body-small md-on-surface-variant">
+                    {{ isBatchGenerating ? `正在处理第 ${batchCurrentChapterNumber ?? '-'} 章` : '按顺序自动生成并定稿' }}
+                  </p>
+                </div>
+                <span
+                  class="md-chip"
+                  :style="isBatchGenerating
+                    ? 'background-color: var(--md-primary-container); color: var(--md-on-primary-container);'
+                    : 'background-color: var(--md-surface-container-high); color: var(--md-on-surface-variant);'"
+                >
+                  {{ isBatchGenerating ? '进行中' : '未启动' }}
+                </span>
+              </div>
+              <div v-if="batchCurrentChapterNumber !== null" class="md-body-small md-on-surface-variant">
+                当前章节：第 {{ batchCurrentChapterNumber }} 章
+                <span v-if="batchAttempt > 0">，第 {{ batchAttempt }}/{{ batchMaxAttempts }} 次尝试</span>
+              </div>
+              <div v-if="batchLastError" class="md-body-small" style="color: var(--md-error);">
+                最近失败：{{ batchLastError }}
+              </div>
+              <button
+                v-if="!isBatchGenerating"
+                @click="$emit('startBatchGenerate', targetWordCount || undefined)"
+                class="md-btn md-btn-filled md-ripple w-full"
+              >
+                连续生成
+              </button>
+              <button
+                v-else
+                @click="$emit('stopBatchGenerate')"
+                :disabled="isBatchStopping"
+                class="md-btn md-btn-tonal md-ripple w-full disabled:opacity-50"
+                style="color: var(--md-error);"
+              >
+                {{ isBatchStopping ? '停止中...' : '停止连续生成' }}
+              </button>
             </div>
           </div>
         </div>
@@ -108,7 +150,7 @@
                   <div class="flex-shrink-0 pt-1">
                     <input
                       type="checkbox"
-                      :disabled="isChapterCompleted(chapter.chapter_number)"
+                      :disabled="isChapterCompleted(chapter.chapter_number) || isBatchGenerating"
                       :checked="selectedForDeletion.includes(chapter.chapter_number)"
                       @click.stop="toggleSelection(chapter.chapter_number)"
                       class="h-4 w-4 rounded border-[var(--md-outline)] text-[var(--md-primary)] focus:ring-[var(--md-primary)] disabled:opacity-50 accent-[var(--md-primary)]"
@@ -219,7 +261,7 @@
                     <button
                       v-if="canShowGenerateAction(chapter.chapter_number)"
                       @click.stop="confirmGenerateChapter(chapter.chapter_number)"
-                      :disabled="generatingChapter === chapter.chapter_number || isChapterGenerating(chapter.chapter_number)"
+                      :disabled="isBatchGenerating || generatingChapter === chapter.chapter_number || isChapterGenerating(chapter.chapter_number)"
                       class="md-icon-btn md-ripple disabled:opacity-50"
                       style="color: var(--md-primary);"
                       :title="isChapterCompleted(chapter.chapter_number) ? '重新生成' : isChapterFailed(chapter.chapter_number) ? '重试' : hasChapterInProgress(chapter.chapter_number) ? '重新生成版本' : '开始创作'"
@@ -245,6 +287,7 @@
             <div v-if="selectedForDeletion.length > 0" class="mt-4">
               <button
                 @click="handleDeleteSelected"
+                :disabled="isBatchGenerating"
                 class="md-btn md-btn-filled md-ripple w-full flex items-center justify-center gap-2"
                 style="background-color: var(--md-error); color: var(--md-on-error);"
               >
@@ -257,7 +300,7 @@
             <div class="mt-4">
               <button
                 @click="$emit('generateOutline')"
-                :disabled="props.isGeneratingOutline"
+                :disabled="props.isGeneratingOutline || isBatchGenerating"
                 class="md-btn md-btn-tonal md-ripple w-full flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <svg v-if="props.isGeneratingOutline" class="w-5 h-5 animate-spin" fill="currentColor" viewBox="0 0 20 20">
@@ -290,11 +333,26 @@ interface Props {
   generatingChapter: number | null
   evaluatingChapter: number | null
   isGeneratingOutline: boolean
+  isBatchGenerating: boolean
+  isBatchStopping: boolean
+  batchCurrentChapterNumber: number | null
+  batchAttempt: number
+  batchMaxAttempts: number
+  batchLastError: string | null
 }
 
 const props = defineProps<Props>()
 
-const emit = defineEmits(['closeSidebar', 'selectChapter', 'generateChapter', 'editChapter', 'deleteChapter', 'generateOutline'])
+const emit = defineEmits([
+  'closeSidebar',
+  'selectChapter',
+  'generateChapter',
+  'editChapter',
+  'deleteChapter',
+  'generateOutline',
+  'startBatchGenerate',
+  'stopBatchGenerate',
+])
 
 const selectedForDeletion = ref<number[]>([])
 const listContainer = ref<HTMLElement | null>(null)

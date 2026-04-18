@@ -655,15 +655,6 @@ async def _finalize_chapter_async(
         if not selected_version or not selected_version.content:
             return
 
-        chapter.selected_version_id = selected_version.id
-        chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
-        chapter.generation_progress = 100
-        chapter.generation_step = "completed"
-        chapter.generation_step_index = 7
-        chapter.generation_step_total = 7
-        chapter.word_count = len(selected_version.content or "")
-        await session.commit()
-
         vector_store = None
         if settings.vector_store_enabled:
             try:
@@ -673,13 +664,38 @@ async def _finalize_chapter_async(
 
         sync_session = getattr(session, "sync_session", session)
         finalize_service = FinalizeService(sync_session, llm_service, vector_store)
-        await finalize_service.finalize_chapter(
+        finalize_result = await finalize_service.finalize_chapter(
             project_id=project_id,
             chapter_number=chapter_number,
             chapter_text=selected_version.content,
             user_id=user_id,
             skip_vector_update=skip_vector_update,
         )
+        if not finalize_result.get("success", False):
+            chapter.selected_version_id = None
+            chapter.status = ChapterGenerationStatus.WAITING_FOR_CONFIRM.value
+            chapter.generation_progress = 100
+            chapter.generation_step = "waiting_for_confirm"
+            chapter.generation_step_index = 7
+            chapter.generation_step_total = 7
+            await session.commit()
+            logger.error(
+                "异步定稿失败 project=%s chapter=%s err=%s",
+                project_id,
+                chapter_number,
+                finalize_result.get("error", "unknown"),
+            )
+            return
+
+        chapter.selected_version_id = selected_version.id
+        chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
+        chapter.generation_progress = 100
+        chapter.generation_step = "completed"
+        chapter.generation_step_index = 7
+        chapter.generation_step_total = 7
+        chapter.word_count = len(selected_version.content or "")
+        await session.commit()
+
         try:
             stats = await _sync_foreshadowings_for_chapter(
                 session,
@@ -794,15 +810,6 @@ async def finalize_chapter(
     if not selected_version or not selected_version.content:
         raise HTTPException(status_code=400, detail="选中的版本不存在或内容为空")
 
-    chapter.selected_version_id = selected_version.id
-    chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
-    chapter.generation_progress = 100
-    chapter.generation_step = "completed"
-    chapter.generation_step_index = 7
-    chapter.generation_step_total = 7
-    chapter.word_count = len(selected_version.content or "")
-    await session.commit()
-
     vector_store = None
     if settings.vector_store_enabled and not request.skip_vector_update:
         try:
@@ -819,6 +826,28 @@ async def finalize_chapter(
         user_id=current_user.id,
         skip_vector_update=request.skip_vector_update or False,
     )
+    if not finalize_result.get("success", False):
+        chapter.selected_version_id = None
+        chapter.status = ChapterGenerationStatus.WAITING_FOR_CONFIRM.value
+        chapter.generation_progress = 100
+        chapter.generation_step = "waiting_for_confirm"
+        chapter.generation_step_index = 7
+        chapter.generation_step_total = 7
+        await session.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=finalize_result.get("error", "章节定稿失败"),
+        )
+
+    chapter.selected_version_id = selected_version.id
+    chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
+    chapter.generation_progress = 100
+    chapter.generation_step = "completed"
+    chapter.generation_step_index = 7
+    chapter.generation_step_total = 7
+    chapter.word_count = len(selected_version.content or "")
+    await session.commit()
+
     background_tasks.add_task(
         _sync_foreshadowings_after_finalize,
         request.project_id,

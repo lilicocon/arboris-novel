@@ -6,7 +6,9 @@
       :progress="progress"
       :completed-chapters="completedChapters"
       :total-chapters="totalChapters"
+      :can-export-txt="canExportTxt"
       @go-back="goBack"
+      @export-txt="downloadConfirmedChaptersTxt"
       @view-project-detail="viewProjectDetail"
       @toggle-sidebar="toggleSidebar"
     />
@@ -44,12 +46,20 @@
           :generating-chapter="generatingChapter"
           :evaluating-chapter="evaluatingChapter"
           :is-generating-outline="isGeneratingOutline"
+          :is-batch-generating="isBatchGenerating"
+          :is-batch-stopping="isBatchStopping"
+          :batch-current-chapter-number="batchCurrentChapterNumber"
+          :batch-attempt="batchAttempt"
+          :batch-max-attempts="BATCH_MAX_ATTEMPTS"
+          :batch-last-error="batchLastError"
           @close-sidebar="closeSidebar"
           @select-chapter="selectChapter"
           @generate-chapter="generateChapter"
           @edit-chapter="openEditChapterModal"
           @delete-chapter="deleteChapter"
           @generate-outline="generateOutline"
+          @start-batch-generate="startBatchGenerate"
+          @stop-batch-generate="stopBatchGenerate"
         />
 
         <div class="flex-1 min-w-0">
@@ -108,7 +118,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
-import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
+import { NovelAPI } from '@/api/novel'
+import type { AdvancedGenerateResponse, Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
 import Tooltip from '@/components/Tooltip.vue'
 import WDHeader from '@/components/writing-desk/WDHeader.vue'
@@ -141,6 +152,15 @@ const editingChapter = ref<ChapterOutline | null>(null)
 const isGeneratingOutline = ref(false)
 const showGenerateOutlineModal = ref(false)
 const isFetchingChapterStatus = ref(false)
+const isBatchGenerating = ref(false)
+const isBatchStopping = ref(false)
+const batchCurrentChapterNumber = ref<number | null>(null)
+const batchAttempt = ref(0)
+const batchLastError = ref<string | null>(null)
+const batchStopRequested = ref(false)
+
+const BATCH_MAX_ATTEMPTS = 5
+const BATCH_RETRY_DELAY_MS = 2000
 
 // 计算属性
 const project = computed(() => novelStore.currentProject)
@@ -186,6 +206,8 @@ const totalChapters = computed(() => {
 const completedChapters = computed(() => {
   return project.value?.chapters?.filter(ch => ch.content)?.length || 0
 })
+
+const canExportTxt = computed(() => completedChapters.value > 0)
 
 const isCurrentVersion = (versionIndex: number) => {
   if (!selectedChapter.value?.content || !availableVersions.value?.[versionIndex]?.content) return false
@@ -425,56 +447,255 @@ const selectChapter = (chapterNumber: number) => {
   closeSidebar()
 }
 
+const setLocalGeneratingState = (chapterNumber: number) => {
+  if (!project.value?.chapters) {
+    return
+  }
+
+  const nowIso = new Date().toISOString()
+  const chapter = project.value.chapters.find(ch => ch.chapter_number === chapterNumber)
+  if (chapter) {
+    chapter.generation_status = 'generating'
+    chapter.generation_progress = 0
+    chapter.generation_step = 'context_prep'
+    chapter.generation_step_index = 1
+    chapter.generation_step_total = null
+    chapter.generation_started_at = nowIso
+    chapter.status_updated_at = nowIso
+    return
+  }
+
+  const outline = project.value.blueprint?.chapter_outline?.find(item => item.chapter_number === chapterNumber)
+  project.value.chapters.push({
+    chapter_number: chapterNumber,
+    title: outline?.title || '加载中...',
+    summary: outline?.summary || '',
+    content: '',
+    versions: [],
+    evaluation: null,
+    generation_status: 'generating',
+    generation_progress: 0,
+    generation_step: 'context_prep',
+    generation_step_index: 1,
+    generation_step_total: null,
+    generation_started_at: nowIso,
+    status_updated_at: nowIso
+  } as Chapter)
+}
+
+const resolveTargetWordCount = (targetWordCount?: number) => (
+  typeof targetWordCount === 'number' && targetWordCount > 0
+    ? targetWordCount
+    : project.value?.blueprint?.chapter_length ?? 3000
+)
+
+const getSortedOutlineNumbers = (): number[] => {
+  if (!project.value?.blueprint?.chapter_outline) {
+    return []
+  }
+  return [...project.value.blueprint.chapter_outline]
+    .sort((a, b) => a.chapter_number - b.chapter_number)
+    .map(item => item.chapter_number)
+}
+
+const resolveBatchStartChapter = (): number | null => {
+  const chapterNumbers = getSortedOutlineNumbers()
+  if (chapterNumbers.length === 0) {
+    return null
+  }
+
+  if (selectedChapterNumber.value !== null) {
+    const selectedNumber = selectedChapterNumber.value
+    const currentStatus = project.value?.chapters.find(
+      ch => ch.chapter_number === selectedNumber
+    )?.generation_status
+    if (currentStatus === 'successful') {
+      return chapterNumbers.find(number => number > selectedNumber) ?? null
+    }
+    return selectedNumber
+  }
+
+  return chapterNumbers.find(number => {
+    const status = project.value?.chapters.find(ch => ch.chapter_number === number)?.generation_status
+    return status !== 'successful'
+  }) ?? null
+}
+
+const getNextChapterNumber = (chapterNumber: number): number | null => {
+  const chapterNumbers = getSortedOutlineNumbers()
+  return chapterNumbers.find(number => number > chapterNumber) ?? null
+}
+
+const waitForRetry = (ms: number) => new Promise((resolve) => {
+  window.setTimeout(resolve, ms)
+})
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return '未知错误'
+}
+
+const getBestVariant = (result: AdvancedGenerateResponse) => {
+  return result.variants.find(item => item.index === result.best_version_index) ?? null
+}
+
+const runBatchChapterAttempt = async (chapterNumber: number, targetWordCount: number) => {
+  generatingChapter.value = chapterNumber
+  selectedChapterNumber.value = chapterNumber
+  chapterGenerationResult.value = null
+  selectedVersionIndex.value = 0
+  setLocalGeneratingState(chapterNumber)
+
+  const result = await novelStore.generateChapter(chapterNumber, targetWordCount)
+  const bestVariant = getBestVariant(result)
+  if (!bestVariant || !bestVariant.content.trim()) {
+    throw new Error('没有可用于自动定稿的版本')
+  }
+
+  await novelStore.finalizeChapter(chapterNumber, bestVariant.version_id)
+
+  const chapter = project.value?.chapters.find(ch => ch.chapter_number === chapterNumber)
+  if (!chapter || chapter.generation_status !== 'successful' || !chapter.content?.trim()) {
+    throw new Error('章节定稿后状态异常')
+  }
+}
+
+const startBatchGenerate = async (targetWordCount?: number) => {
+  if (isBatchGenerating.value) {
+    return
+  }
+
+  const startChapterNumber = resolveBatchStartChapter()
+  if (startChapterNumber === null) {
+    await globalAlert.showAlert('当前没有可连续生成的章节。', 'info', '无需处理')
+    return
+  }
+
+  const resolvedTargetWordCount = resolveTargetWordCount(targetWordCount)
+  isBatchGenerating.value = true
+  isBatchStopping.value = false
+  batchStopRequested.value = false
+  batchCurrentChapterNumber.value = null
+  batchAttempt.value = 0
+  batchLastError.value = null
+  closeSidebar()
+
+  let currentChapterNumber: number | null = startChapterNumber
+  try {
+    while (currentChapterNumber !== null) {
+      if (batchStopRequested.value) {
+        break
+      }
+
+      batchCurrentChapterNumber.value = currentChapterNumber
+      selectedChapterNumber.value = currentChapterNumber
+      let chapterSucceeded = false
+
+      for (let attempt = 1; attempt <= BATCH_MAX_ATTEMPTS; attempt += 1) {
+        if (batchStopRequested.value) {
+          break
+        }
+
+        batchAttempt.value = attempt
+        batchLastError.value = null
+
+        try {
+          await runBatchChapterAttempt(currentChapterNumber, resolvedTargetWordCount)
+          chapterSucceeded = true
+          break
+        } catch (error) {
+          batchLastError.value = getErrorMessage(error)
+          if (attempt < BATCH_MAX_ATTEMPTS && !batchStopRequested.value) {
+            await waitForRetry(BATCH_RETRY_DELAY_MS)
+          }
+        } finally {
+          generatingChapter.value = null
+        }
+      }
+
+      if (batchStopRequested.value) {
+        break
+      }
+
+      if (!chapterSucceeded) {
+        await globalAlert.showError(
+          `第 ${currentChapterNumber} 章已连续尝试 ${BATCH_MAX_ATTEMPTS} 次，仍然失败：${batchLastError.value || '未知错误'}`,
+          '连续生成已停止'
+        )
+        return
+      }
+
+      currentChapterNumber = getNextChapterNumber(currentChapterNumber)
+    }
+
+    if (batchStopRequested.value) {
+      await globalAlert.showAlert('连续生成已按你的要求停止。', 'info', '已停止')
+      return
+    }
+
+    await globalAlert.showSuccess('已按顺序完成可生成章节。', '连续生成完成')
+  } finally {
+    generatingChapter.value = null
+    isBatchGenerating.value = false
+    isBatchStopping.value = false
+    batchStopRequested.value = false
+    batchCurrentChapterNumber.value = null
+    batchAttempt.value = 0
+  }
+}
+
+const stopBatchGenerate = () => {
+  if (!isBatchGenerating.value || isBatchStopping.value) {
+    return
+  }
+  batchStopRequested.value = true
+  isBatchStopping.value = true
+}
+
+const sanitizeFileName = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_')
+
+const downloadConfirmedChaptersTxt = async () => {
+  if (!project.value || !canExportTxt.value) {
+    return
+  }
+
+  try {
+    const blob = await NovelAPI.downloadConfirmedChaptersTxt(project.value.id)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const safeTitle = sanitizeFileName(project.value.title || 'novel') || 'novel'
+    link.href = url
+    link.download = `${safeTitle}.txt`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    await globalAlert.showError(`导出 TXT 失败: ${getErrorMessage(error)}`, '导出失败')
+  }
+}
+
 const generateChapter = async (chapterNumber: number, targetWordCount?: number) => {
+  if (isBatchGenerating.value) {
+    await globalAlert.showAlert('连续生成进行中，请先停止后再手动操作。', 'info', '当前不可操作')
+    return
+  }
+
   // 检查是否可以生成该章节
   if (!canGenerateChapter(chapterNumber) && !isChapterFailed(chapterNumber) && !hasChapterInProgress(chapterNumber)) {
     globalAlert.showError('请按顺序生成章节，先完成前面的章节', '生成受限')
     return
   }
 
-  const resolvedTargetWordCount = (
-    typeof targetWordCount === 'number' && targetWordCount > 0
-      ? targetWordCount
-      : project.value?.blueprint?.chapter_length ?? 3000
-  )
+  const resolvedTargetWordCount = resolveTargetWordCount(targetWordCount)
 
   try {
     generatingChapter.value = chapterNumber
     selectedChapterNumber.value = chapterNumber
     chapterGenerationResult.value = null
-    const nowIso = new Date().toISOString()
-
-    // 在本地更新章节状态为generating
-    if (project.value?.chapters) {
-      const chapter = project.value.chapters.find(ch => ch.chapter_number === chapterNumber)
-      if (chapter) {
-        chapter.generation_status = 'generating'
-        chapter.generation_progress = 0
-        chapter.generation_step = 'context_prep'
-        chapter.generation_step_index = 1
-        chapter.generation_step_total = null
-        chapter.generation_started_at = nowIso
-        chapter.status_updated_at = nowIso
-      } else {
-        // If chapter does not exist, create a temporary one to show generating state
-        const outline = project.value.blueprint?.chapter_outline?.find(o => o.chapter_number === chapterNumber)
-        project.value.chapters.push({
-          chapter_number: chapterNumber,
-          title: outline?.title || '加载中...',
-          summary: outline?.summary || '',
-          content: '',
-          versions: [],
-          evaluation: null,
-          generation_status: 'generating',
-          generation_progress: 0,
-          generation_step: 'context_prep',
-          generation_step_index: 1,
-          generation_step_total: null,
-          generation_started_at: nowIso,
-          status_updated_at: nowIso
-        } as Chapter)
-      }
-    }
+    setLocalGeneratingState(chapterNumber)
 
     await novelStore.generateChapter(chapterNumber, resolvedTargetWordCount)
     // 高级生成接口不返回项目快照，这里强制拉取当前章最新状态。

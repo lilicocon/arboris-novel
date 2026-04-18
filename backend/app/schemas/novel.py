@@ -152,7 +152,7 @@ class FlowConfig(BaseModel):
     enable_preview: Optional[bool] = Field(default=None, description="是否启用预演生成")
     enable_optimizer: Optional[bool] = Field(default=None, description="是否启用优化器")
     enable_consistency: Optional[bool] = Field(default=None, description="是否启用一致性检查")
-    enable_enrichment: Optional[bool] = Field(default=None, description="是否启用字数扩写")
+    enable_enrichment: Optional[bool] = Field(default=None, description="是否显式启用字数扩写；不传则由后端自动判定")
     async_finalize: Optional[bool] = Field(default=None, description="是否异步定稿")
     enable_rag: Optional[bool] = Field(default=None, description="是否启用 RAG")
     rag_mode: Optional[str] = Field(default=None, description="simple|two_stage")

@@ -78,6 +78,24 @@ def _clean_string(text: str, parse_json: bool = True) -> str:
         .replace("\\\\", "\\")
     )
 
+
+def build_confirmed_chapters_txt(chapters: Iterable[Dict[str, Any]]) -> str:
+    sections: List[str] = []
+    normalized = sorted(
+        chapters,
+        key=lambda item: int(item.get("chapter_number", 0)),
+    )
+    for chapter in normalized:
+        chapter_number = int(chapter.get("chapter_number", 0))
+        title = str(chapter.get("title") or f"第{chapter_number}章").strip()
+        content = _coerce_text(chapter.get("content")) or ""
+        if not content.strip():
+            continue
+        heading = f"第{chapter_number}章 {title}" if not title.startswith(f"第{chapter_number}章") else title
+        sections.append(f"{heading}\n\n{content.strip()}")
+
+    return "\n\n\n".join(sections)
+
 from fastapi import HTTPException, status
 from sqlalchemy import delete, func, inspect, select, update
 from sqlalchemy.orm import selectinload
