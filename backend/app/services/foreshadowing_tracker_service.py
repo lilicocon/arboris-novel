@@ -5,7 +5,10 @@
 """
 from typing import Optional, List, Dict, Any
 import json
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
@@ -17,6 +20,7 @@ from ..models.foreshadowing import (
 )
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .structured_llm_service import StructuredLLMService
 
 
 class ForeshadowingTrackerService:
@@ -26,9 +30,17 @@ class ForeshadowingTrackerService:
         self.db = db
         self.llm_service = llm_service
         self.prompt_service = prompt_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
-    async def get_active_foreshadowings(self, project_id: str) -> List[Foreshadowing]:
-        """获取所有活跃的伏笔（未揭示/未放弃）"""
+    async def get_active_foreshadowings(
+        self,
+        project_id: str,
+        current_chapter: Optional[int] = None,
+    ) -> List[Foreshadowing]:
+        """获取所有活跃的伏笔（未揭示/未放弃）。
+
+        当传入 current_chapter 时，对超过目标揭示章节的伏笔发出警告。
+        """
         result = await self.db.execute(
             select(Foreshadowing).where(
                 and_(
@@ -37,7 +49,22 @@ class ForeshadowingTrackerService:
                 )
             ).order_by(Foreshadowing.chapter_number)
         )
-        return list(result.scalars().all())
+        foreshadowings = list(result.scalars().all())
+
+        if current_chapter is not None:
+            for fs in foreshadowings:
+                if (
+                    fs.status in ("planted", "developing")
+                    and fs.target_reveal_chapter is not None
+                    and fs.target_reveal_chapter < current_chapter
+                ):
+                    logger.warning(
+                        "Overdue foreshadowing #%s: expected reveal at chapter %s,"
+                        " currently at chapter %s",
+                        fs.id, fs.target_reveal_chapter, current_chapter,
+                    )
+
+        return foreshadowings
 
     async def get_foreshadowings_for_chapter(
         self, 
@@ -185,13 +212,8 @@ class ForeshadowingTrackerService:
         
         # 解析结果
         try:
-            content = response or ""
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result
-        except json.JSONDecodeError:
+            return self.structured_llm_service.parse_json(response or "")
+        except Exception:
             pass
         
         return self._create_basic_reminders(categorized, chapter_number)

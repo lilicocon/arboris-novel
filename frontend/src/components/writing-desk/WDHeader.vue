@@ -23,30 +23,38 @@
         </div>
 
         <!-- 右侧：操作按钮 -->
-        <div class="flex items-center gap-1 sm:gap-2">
+        <div class="flex items-center gap-1 sm:gap-2 relative">
           <button
             @click="$emit('exportTxt')"
             :disabled="!canExportTxt"
-            class="md-btn md-btn-text md-ripple flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            class="hidden md:flex md-btn md-btn-text md-ripple items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M3 14a1 1 0 011-1h3v-3a1 1 0 112 0v3h3a1 1 0 110 2H9v3a1 1 0 11-2 0v-3H4a1 1 0 01-1-1zm11-9H9a1 1 0 110-2h5a2 2 0 012 2v5a1 1 0 11-2 0V5z" clip-rule="evenodd"></path>
             </svg>
             <span class="hidden md:inline">导出 TXT</span>
           </button>
-          <button @click="$emit('viewProjectDetail')" class="md-btn md-btn-text md-ripple flex items-center gap-2">
+          <button @click="$emit('viewProjectDetail')" class="hidden md:flex md-btn md-btn-text md-ripple items-center gap-2">
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
               <path d="M10 12a2 2 0 100-4 2 2 0 000 4z"></path>
               <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"></path>
             </svg>
             <span class="hidden md:inline">项目详情</span>
           </button>
-          <div class="w-px h-6 hidden sm:block" style="background-color: var(--md-outline-variant);"></div>
-          <button @click="handleLogout" class="md-btn md-btn-text md-ripple flex items-center gap-2">
+          <div class="w-px h-6 hidden md:block" style="background-color: var(--md-outline-variant);"></div>
+          <button @click="handleLogout" class="hidden md:flex md-btn md-btn-text md-ripple items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
             </svg>
             <span class="hidden md:inline">退出登录</span>
+          </button>
+          <button
+            @click="toggleMobileMenu"
+            class="md-icon-btn md-ripple md:hidden"
+          >
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M6 10a2 2 0 114 0 2 2 0 01-4 0zm4-6a2 2 0 100 4 2 2 0 000-4zm0 12a2 2 0 100 4 2 2 0 000-4z"></path>
+            </svg>
           </button>
           <button
             @click="$emit('toggleSidebar')"
@@ -56,6 +64,31 @@
               <path fill-rule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd"></path>
             </svg>
           </button>
+          <div
+            v-if="mobileMenuOpen"
+            class="absolute right-0 top-14 md:hidden w-44 rounded-xl border bg-white shadow-lg p-2"
+            style="border-color: var(--md-outline-variant);"
+          >
+            <button
+              class="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-slate-100"
+              @click="handleMobileProjectDetail"
+            >
+              项目详情
+            </button>
+            <button
+              class="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-slate-100 disabled:opacity-50"
+              :disabled="!canExportTxt"
+              @click="handleMobileExport"
+            >
+              导出 TXT
+            </button>
+            <button
+              class="w-full text-left px-3 py-2 rounded-lg text-sm text-rose-600 hover:bg-rose-50"
+              @click="handleLogout"
+            >
+              退出登录
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -63,6 +96,7 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import type { NovelProject } from '@/api/novel'
@@ -70,9 +104,26 @@ import type { NovelProject } from '@/api/novel'
 const router = useRouter()
 const authStore = useAuthStore()
 
+const mobileMenuOpen = ref(false)
+
 const handleLogout = () => {
+  mobileMenuOpen.value = false
   authStore.logout()
   router.push('/login')
+}
+
+const toggleMobileMenu = () => {
+  mobileMenuOpen.value = !mobileMenuOpen.value
+}
+
+const handleMobileProjectDetail = () => {
+  mobileMenuOpen.value = false
+  emit('viewProjectDetail')
+}
+
+const handleMobileExport = () => {
+  mobileMenuOpen.value = false
+  emit('exportTxt')
 }
 
 interface Props {
@@ -85,5 +136,5 @@ interface Props {
 
 defineProps<Props>()
 
-defineEmits(['goBack', 'viewProjectDetail', 'toggleSidebar', 'exportTxt'])
+const emit = defineEmits(['goBack', 'viewProjectDetail', 'toggleSidebar', 'exportTxt'])
 </script>

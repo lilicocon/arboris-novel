@@ -12,6 +12,7 @@ from sqlalchemy import select
 from ..models.constitution import NovelConstitution
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .structured_llm_service import StructuredLLMService
 
 
 class ConstitutionService:
@@ -21,6 +22,7 @@ class ConstitutionService:
         self.db = db
         self.llm_service = llm_service
         self.prompt_service = prompt_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
     async def get_constitution(self, project_id: str) -> Optional[NovelConstitution]:
         """获取项目的小说宪法"""
@@ -77,34 +79,38 @@ class ConstitutionService:
             }
         
         # 构建提示词
-        prompt = prompt_template.replace("{{constitution}}", constitution.to_prompt_context())
-        prompt = prompt.replace("{{chapter_number}}", str(chapter_number))
-        prompt = prompt.replace("{{chapter_title}}", chapter_title)
-        prompt = prompt.replace("{{chapter_content}}", chapter_content)
-        
-        # 调用 LLM 进行检查
-        response = await self.llm_service.generate(
-            prompt=prompt,
-            system_prompt="你是一位严格的小说编辑，负责检查章节内容是否符合小说宪法。请以 JSON 格式输出检查结果。"
+        user_content = prompt_template.replace("{{constitution}}", constitution.to_prompt_context())
+        user_content = user_content.replace("{{chapter_number}}", str(chapter_number))
+        user_content = user_content.replace("{{chapter_title}}", chapter_title)
+        user_content = user_content.replace("{{chapter_content}}", chapter_content)
+        user_content += (
+            "\n\n请以 JSON 格式输出检查结果，结构为：\n"
+            '{"compliance_score": <0-100>, "issues": ["问题描述列表"]}'
         )
-        
-        # 解析结果
+
         try:
-            # 尝试提取 JSON
-            content = response or ""
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result
-        except json.JSONDecodeError:
+            data = await self.structured_llm_service.generate_json(
+                system_prompt="你是一位严格的小说编辑，负责检查章节内容是否符合小说宪法。",
+                user_content=user_content,
+                user_id=None,
+                temperature=0.3,
+            )
+            compliance_score = int(data.get("compliance_score", 80))
+            issues = data.get("issues", [])
+            return {
+                "overall_compliance": compliance_score >= 60,
+                "overall_score": compliance_score,
+                "violations": issues,
+                "summary": f"合规检查完成，评分 {compliance_score}",
+            }
+        except Exception:
             pass
-        
+
         return {
             "overall_compliance": True,
             "overall_score": 80,
             "violations": [],
-            "summary": "合规检查完成，但结果解析失败"
+            "summary": "合规检查完成，但结果解析失败",
         }
 
     def get_constitution_context(self, constitution: Optional[NovelConstitution]) -> str:

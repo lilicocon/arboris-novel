@@ -10,12 +10,14 @@ from ..schemas.novel import ChapterOutline as ChapterOutlineSchema
 from ..services.llm_service import LLMService
 from ..services.novel_service import NovelService
 from ..services.prompt_service import PromptService
-from ..utils.json_utils import remove_think_tags, unwrap_markdown_json
+from ..services.structured_llm_service import StructuredLLMService
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTLINE_BATCH_SIZE = 20
 DEFAULT_EXPAND_SUMMARY_MIN_LENGTH = 80
+DEFAULT_OUTLINE_STATUS = "draft"
+_VALID_OUTLINE_STATUSES: frozenset[str] = frozenset({"draft", "approved", "needs_regen"})
 
 
 class OutlineGenerationService:
@@ -32,6 +34,7 @@ class OutlineGenerationService:
         self.session = session
         self.prompt_service = prompt_service
         self.llm_service = llm_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
         self.novel_service = novel_service or NovelService(session)
 
     @staticmethod
@@ -81,10 +84,12 @@ class OutlineGenerationService:
             raise ValueError(f"章节 {chapter_number} 缺少标题")
         if not summary:
             raise ValueError(f"章节 {chapter_number} 缺少摘要")
+        raw_status = str(item.get("status") or DEFAULT_OUTLINE_STATUS)
         return {
             "chapter_number": chapter_number,
             "title": title,
             "summary": summary,
+            "status": raw_status if raw_status in _VALID_OUTLINE_STATUSES else DEFAULT_OUTLINE_STATUS,
         }
 
     @classmethod
@@ -146,6 +151,7 @@ class OutlineGenerationService:
                     chapter_number=item["chapter_number"],
                     title=item["title"],
                     summary=item["summary"],
+                    metadata={"status": DEFAULT_OUTLINE_STATUS},
                 )
             await self.session.commit()
             generated += len(batch)
@@ -223,6 +229,7 @@ class OutlineGenerationService:
                     chapter_number=item["chapter_number"],
                     title=item["title"],
                     summary=item["summary"],
+                    metadata={"status": item.get("status") or DEFAULT_OUTLINE_STATUS},
                 )
             await self.session.commit()
             expanded += len(expanded_batch)
@@ -230,6 +237,79 @@ class OutlineGenerationService:
 
         await self.novel_service._touch_project(project_id)
         return {"expanded_chapters": expanded, "batches": batches}
+
+    async def update_outline_status(
+        self,
+        *,
+        project_id: str,
+        chapter_numbers: Sequence[int],
+        status: str,
+    ) -> Dict[str, int]:
+        current_outlines = await self._list_outline_dicts(project_id)
+        numbers = {int(num) for num in chapter_numbers if int(num) > 0}
+        updated = 0
+        for item in current_outlines:
+            if item["chapter_number"] not in numbers:
+                continue
+            await self.novel_service.update_or_create_outline(
+                project_id=project_id,
+                chapter_number=item["chapter_number"],
+                title=item["title"],
+                summary=item["summary"],
+                metadata={"status": status},
+            )
+            updated += 1
+        if updated:
+            await self.session.commit()
+            await self.novel_service._touch_project(project_id)
+        return {"updated_chapters": updated}
+
+    async def reroll_outlines(
+        self,
+        *,
+        project_id: str,
+        user_id: int,
+        chapter_numbers: Optional[Sequence[int]] = None,
+        batch_size: int = DEFAULT_OUTLINE_BATCH_SIZE,
+        only_needs_regen: bool = True,
+    ) -> Dict[str, Any]:
+        current_outlines = await self._list_outline_dicts(project_id)
+        if chapter_numbers:
+            requested = {int(num) for num in chapter_numbers if int(num) > 0}
+            targets = [item for item in current_outlines if item["chapter_number"] in requested]
+        elif only_needs_regen:
+            targets = [item for item in current_outlines if item.get("status") == "needs_regen"]
+        else:
+            targets = list(current_outlines)
+
+        if not targets:
+            return {"rerolled_chapters": 0, "batches": 0}
+
+        rerolled = 0
+        batches = 0
+        for index in range(0, len(targets), batch_size):
+            batch_targets = targets[index : index + batch_size]
+            latest_outlines = await self._list_outline_dicts(project_id)
+            regenerated = await self._request_reroll_batch(
+                project_id=project_id,
+                user_id=user_id,
+                current_outlines=latest_outlines,
+                target_outlines=batch_targets,
+            )
+            for item in regenerated:
+                await self.novel_service.update_or_create_outline(
+                    project_id=project_id,
+                    chapter_number=item["chapter_number"],
+                    title=item["title"],
+                    summary=item["summary"],
+                    metadata={"status": DEFAULT_OUTLINE_STATUS},
+                )
+            await self.session.commit()
+            rerolled += len(regenerated)
+            batches += 1
+
+        await self.novel_service._touch_project(project_id)
+        return {"rerolled_chapters": rerolled, "batches": batches}
 
     async def _request_outline_batch(
         self,
@@ -249,7 +329,8 @@ class OutlineGenerationService:
             raise ValueError("项目不存在")
         project_schema = await self.novel_service._serialize_project(project)
         content_rating = getattr(project_schema.blueprint, "content_rating", "safe")
-        blueprint_text = json.dumps(project_schema.blueprint.model_dump(), ensure_ascii=False, indent=2)
+        _bp = project_schema.blueprint
+        blueprint_text = json.dumps(_bp.model_dump() if _bp else {}, ensure_ascii=False, indent=2)
         context_text = self._build_outline_context(
             current_outlines=current_outlines,
             start_chapter=start_chapter,
@@ -273,19 +354,18 @@ class OutlineGenerationService:
 5. summary 必须写具体剧情推进，不要只写一句空泛描述。
 6. 不要改动参考章节编号，它们只作为上下文。
 """
-        response = await self.llm_service.get_llm_response(
+        data = await self.structured_llm_service.generate_json(
             system_prompt=outline_prompt,
-            conversation_history=[{"role": "user", "content": prompt_input}],
+            user_content=prompt_input,
             temperature=0.7,
             user_id=user_id,
             role="writer",
             content_rating=content_rating,
         )
-        cleaned = remove_think_tags(response)
-        normalized = unwrap_markdown_json(cleaned)
-        data = json.loads(normalized)
+        if not isinstance(data.get("chapters"), list) or len(data["chapters"]) == 0:
+            raise ValueError("LLM returned outline without valid chapters field")
         return self.validate_generated_batch(
-            data.get("chapters", []),
+            data["chapters"],
             start_chapter=start_chapter,
             num_chapters=num_chapters,
         )
@@ -307,7 +387,8 @@ class OutlineGenerationService:
             raise ValueError("项目不存在")
         project_schema = await self.novel_service._serialize_project(project)
         content_rating = getattr(project_schema.blueprint, "content_rating", "safe")
-        blueprint_text = json.dumps(project_schema.blueprint.model_dump(), ensure_ascii=False, indent=2)
+        _bp = project_schema.blueprint
+        blueprint_text = json.dumps(_bp.model_dump() if _bp else {}, ensure_ascii=False, indent=2)
         chapter_numbers = [item["chapter_number"] for item in target_outlines]
         prompt_input = f"""
 [世界蓝图]
@@ -329,17 +410,14 @@ class OutlineGenerationService:
 4. 只能扩写 summary，不要删除剧情信息。
 5. 只能返回一个 JSON 对象，结构为 {{ "chapters": [...] }}。
 """
-        response = await self.llm_service.get_llm_response(
+        data = await self.structured_llm_service.generate_json(
             system_prompt=outline_prompt,
-            conversation_history=[{"role": "user", "content": prompt_input}],
+            user_content=prompt_input,
             temperature=0.5,
             user_id=user_id,
             role="writer",
             content_rating=content_rating,
         )
-        cleaned = remove_think_tags(response)
-        normalized = unwrap_markdown_json(cleaned)
-        data = json.loads(normalized)
         validated = self.validate_generated_batch(
             data.get("chapters", []),
             start_chapter=min(chapter_numbers),
@@ -351,6 +429,62 @@ class OutlineGenerationService:
             item["title"] = original_titles[item["chapter_number"]]
         return validated
 
+    async def _request_reroll_batch(
+        self,
+        *,
+        project_id: str,
+        user_id: int,
+        current_outlines: Sequence[Dict[str, Any]],
+        target_outlines: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        outline_prompt = await self.prompt_service.get_prompt("outline_generation")
+        if not outline_prompt:
+            raise ValueError("未配置大纲生成提示词")
+
+        project = await self.novel_service.repo.get_by_id(project_id)
+        if not project:
+            raise ValueError("项目不存在")
+        project_schema = await self.novel_service._serialize_project(project)
+        content_rating = getattr(project_schema.blueprint, "content_rating", "safe")
+        _bp = project_schema.blueprint
+        blueprint_text = json.dumps(_bp.model_dump() if _bp else {}, ensure_ascii=False, indent=2)
+        chapter_numbers = [item["chapter_number"] for item in target_outlines]
+        prompt_input = f"""
+[世界蓝图]
+{blueprint_text}
+
+[完整章节参考]
+{self._build_outline_context(current_outlines=current_outlines, start_chapter=min(chapter_numbers), end_chapter=max(chapter_numbers))}
+
+[待重生成章节]
+{json.dumps(target_outlines, ensure_ascii=False, indent=2)}
+
+[重生成任务]
+请只重写以上章节的 title 和 summary，让情节更有张力、推进更明确、章节钩子更强。
+
+硬性要求：
+1. 只能返回一个 JSON 对象，结构为 {{ "chapters": [...] }}。
+2. 必须返回恰好 {len(target_outlines)} 个章节。
+3. chapter_number 必须严格保持为 {chapter_numbers}。
+4. 不要输出参考章节，不要新增其它章节。
+5. 允许重写 title 和 summary，但不能改动章节编号。
+"""
+        data = await self.structured_llm_service.generate_json(
+            system_prompt=outline_prompt,
+            user_content=prompt_input,
+            temperature=0.8,
+            user_id=user_id,
+            role="writer",
+            content_rating=content_rating,
+        )
+        validated = self.validate_generated_batch(
+            data.get("chapters", []),
+            start_chapter=min(chapter_numbers),
+            num_chapters=len(target_outlines),
+            expected_numbers=chapter_numbers,
+        )
+        return validated
+
     async def _list_outline_dicts(self, project_id: str) -> List[Dict[str, Any]]:
         project = await self.novel_service.repo.get_by_id(project_id)
         if not project:
@@ -360,6 +494,7 @@ class OutlineGenerationService:
                 "chapter_number": item.chapter_number,
                 "title": item.title,
                 "summary": item.summary or "",
+                "status": ((item.metadata or {}).get("status") or DEFAULT_OUTLINE_STATUS),
             }
             for item in sorted(project.outlines, key=lambda outline: outline.chapter_number)
         ]

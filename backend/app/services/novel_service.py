@@ -350,53 +350,58 @@ class NovelService:
         record.world_setting = blueprint.world_setting
         record.chapter_length = blueprint.chapter_length
 
-        await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
-        for index, data in enumerate(blueprint.characters):
-            self.session.add(
-                BlueprintCharacter(
-                    project_id=project_id,
-                    name=data.get("name", ""),
-                    identity=data.get("identity"),
-                    personality=data.get("personality"),
-                    goals=data.get("goals"),
-                    abilities=data.get("abilities"),
-                    relationship_to_protagonist=data.get("relationship_to_protagonist"),
-                    extra={k: v for k, v in data.items() if k not in {
-                        "name",
-                        "identity",
-                        "personality",
-                        "goals",
-                        "abilities",
-                        "relationship_to_protagonist",
-                    }},
-                    position=index,
+        try:
+            await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
+            for index, data in enumerate(blueprint.characters):
+                self.session.add(
+                    BlueprintCharacter(
+                        project_id=project_id,
+                        name=data.get("name", ""),
+                        identity=data.get("identity"),
+                        personality=data.get("personality"),
+                        goals=data.get("goals"),
+                        abilities=data.get("abilities"),
+                        relationship_to_protagonist=data.get("relationship_to_protagonist"),
+                        extra={k: v for k, v in data.items() if k not in {
+                            "name",
+                            "identity",
+                            "personality",
+                            "goals",
+                            "abilities",
+                            "relationship_to_protagonist",
+                        }},
+                        position=index,
+                    )
                 )
-            )
 
-        await self.session.execute(delete(BlueprintRelationship).where(BlueprintRelationship.project_id == project_id))
-        for index, relation in enumerate(blueprint.relationships):
-            self.session.add(
-                BlueprintRelationship(
-                    project_id=project_id,
-                    character_from=relation.character_from,
-                    character_to=relation.character_to,
-                    description=relation.description,
-                    position=index,
+            await self.session.execute(delete(BlueprintRelationship).where(BlueprintRelationship.project_id == project_id))
+            for index, relation in enumerate(blueprint.relationships):
+                self.session.add(
+                    BlueprintRelationship(
+                        project_id=project_id,
+                        character_from=relation.character_from,
+                        character_to=relation.character_to,
+                        description=relation.description,
+                        position=index,
+                    )
                 )
-            )
 
-        await self.session.execute(delete(ChapterOutline).where(ChapterOutline.project_id == project_id))
-        for outline in blueprint.chapter_outline:
-            self.session.add(
-                ChapterOutline(
-                    project_id=project_id,
-                    chapter_number=outline.chapter_number,
-                    title=outline.title,
-                    summary=outline.summary,
+            await self.session.execute(delete(ChapterOutline).where(ChapterOutline.project_id == project_id))
+            for outline in blueprint.chapter_outline:
+                self.session.add(
+                    ChapterOutline(
+                        project_id=project_id,
+                        chapter_number=outline.chapter_number,
+                        title=outline.title,
+                        summary=outline.summary,
+                        metadata={"status": getattr(outline, "status", "draft") or "draft"},
+                    )
                 )
-            )
 
-        await self.session.commit()
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
         await self._touch_project(project_id)
 
     async def patch_blueprint(self, project_id: str, patch: Dict) -> None:
@@ -457,6 +462,7 @@ class NovelService:
                         chapter_number=outline.get("chapter_number"),
                         title=outline.get("title", ""),
                         summary=outline.get("summary"),
+                        metadata={"status": outline.get("status") or "draft"},
                     )
                 )
         if "chapter_length" in patch:
@@ -500,7 +506,8 @@ class NovelService:
             outline.title = title
             outline.summary = summary
             if metadata is not None:
-                outline.metadata = metadata
+                existing_meta = outline.metadata or {}
+                outline.metadata = {**existing_meta, **metadata}
         else:
             outline = ChapterOutline(
                 project_id=project_id,
@@ -533,28 +540,32 @@ class NovelService:
         return chapter
 
     async def replace_chapter_versions(self, chapter: Chapter, contents: List[str], metadata: Optional[List[Dict]] = None) -> List[ChapterVersion]:
-        await self.session.execute(delete(ChapterVersion).where(ChapterVersion.chapter_id == chapter.id))
-        # 清空已选版本，避免关系缓存导致序列化时读到旧正文。
-        chapter.selected_version_id = None
-        chapter.selected_version = None
-        versions: List[ChapterVersion] = []
-        for index, content in enumerate(contents):
-            extra = metadata[index] if metadata and index < len(metadata) else None
-            text_content = _normalize_version_content(content, extra)
-            version = ChapterVersion(
-                chapter_id=chapter.id,
-                content=text_content,
-                metadata=extra,  # ✅ 落盘 metadata
-                version_label=f"v{index+1}",
-            )
-            self.session.add(version)
-            versions.append(version)
-        chapter.status = ChapterGenerationStatus.WAITING_FOR_CONFIRM.value
-        chapter.generation_progress = 100
-        chapter.generation_step = "waiting_for_confirm"
-        chapter.generation_step_index = 7
-        chapter.generation_step_total = 7
-        await self.session.commit()
+        try:
+            await self.session.execute(delete(ChapterVersion).where(ChapterVersion.chapter_id == chapter.id))
+            # 清空已选版本，避免关系缓存导致序列化时读到旧正文。
+            chapter.selected_version_id = None
+            chapter.selected_version = None
+            versions: List[ChapterVersion] = []
+            for index, content in enumerate(contents):
+                extra = metadata[index] if metadata and index < len(metadata) else None
+                text_content = _normalize_version_content(content, extra)
+                version = ChapterVersion(
+                    chapter_id=chapter.id,
+                    content=text_content,
+                    metadata=extra,  # 落盘 metadata
+                    version_label=f"v{index+1}",
+                )
+                self.session.add(version)
+                versions.append(version)
+            chapter.status = ChapterGenerationStatus.WAITING_FOR_CONFIRM.value
+            chapter.generation_progress = 100
+            chapter.generation_step = "waiting_for_confirm"
+            chapter.generation_step_index = 7
+            chapter.generation_step_total = 7
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
         await self.session.refresh(chapter)
         await self._touch_project(chapter.project_id)
         return versions
@@ -800,6 +811,7 @@ class NovelService:
                         chapter_number=outline.chapter_number,
                         title=outline.title,
                         summary=outline.summary or "",
+                        status=((outline.metadata or {}).get("status") or "draft"),
                     )
                     for outline in sorted(project.outlines, key=lambda o: o.chapter_number)
                 ],

@@ -14,6 +14,15 @@ class SystemConfigRepository(BaseRepository[SystemConfig]):
         result = await self.session.execute(select(SystemConfig).where(SystemConfig.key == key))
         return result.scalars().first()
 
+    async def get_by_keys(self, keys: Iterable[str]) -> dict[str, "SystemConfig"]:
+        key_list = list(keys)
+        if not key_list:
+            return {}
+        result = await self.session.execute(
+            select(SystemConfig).where(SystemConfig.key.in_(key_list))
+        )
+        return {item.key: item for item in result.scalars().all()}
+
     async def list_all(self) -> Iterable[SystemConfig]:
         result = await self.session.execute(select(SystemConfig).order_by(SystemConfig.key))
         return result.scalars().all()

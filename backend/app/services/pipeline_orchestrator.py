@@ -33,6 +33,7 @@ from ..services.preview_generation_service import PreviewGenerationService
 from ..services.prompt_service import PromptService
 from ..services.reader_simulator_service import ReaderSimulatorService, ReaderType
 from ..services.self_critique_service import CritiqueDimension, SelfCritiqueService
+from ..services.structured_llm_service import StructuredLLMService
 from ..services.vector_store_service import VectorStoreService
 from ..services.writer_context_builder import WriterContextBuilder
 from ..services.context_budgeter import ContextBudgeter
@@ -66,6 +67,13 @@ def _resolve_target_word_count(
 
 def _calc_max_tokens(target_word_count: int) -> int:
     return min(max(target_word_count * 2, WRITER_GENERATION_MAX_TOKENS), 32000)
+
+
+_DEFAULT_STYLE_HINTS: list[str] = [
+    "情绪更细腻，节奏更慢，多写内心戏和感官描写",
+    "冲突更强，节奏更快，多写动作和对话",
+    "悬念更重，多埋伏笔，结尾钩子更强",
+]
 
 
 @dataclass
@@ -131,6 +139,7 @@ class PipelineOrchestrator:
         chapter.generation_step_index = 1
         chapter.generation_step_total = 7
         await self.session.commit()
+        logger.info("[%s] ch%s ▶ [1/7] 3%% 准备上下文...", project_id[:8], chapter_number)
 
         outlines_map = {item.chapter_number: item for item in project.outlines}
         history_context = await self._collect_history_context(
@@ -142,6 +151,8 @@ class PipelineOrchestrator:
         )
 
         project_schema = await self.novel_service._serialize_project(project)
+        if not project_schema.blueprint:
+            raise HTTPException(status_code=422, detail="Project has no blueprint yet")
         blueprint_dict = self._normalize_blueprint(project_schema.blueprint.model_dump())
         content_rating = str(blueprint_dict.get("content_rating") or "safe").lower()
 
@@ -158,6 +169,8 @@ class PipelineOrchestrator:
 
         all_characters = [c.get("name") for c in blueprint_dict.get("characters", []) if c.get("name")]
 
+        project_memory_text = await self._get_project_memory_text(project_id)
+
         chapter_mission = await self._generate_chapter_mission(
             blueprint_dict=blueprint_dict,
             previous_summary=history_context["previous_summary"],
@@ -170,10 +183,38 @@ class PipelineOrchestrator:
             user_id=user_id,
             content_rating=content_rating,
         )
+
+        rag_context = None
+        knowledge_context = None
+        rag_stats = None
+        if config.enable_rag:
+            if config.rag_mode == "two_stage":
+                knowledge_context, rag_stats = await self._get_two_stage_rag_context(
+                    project_id=project_id,
+                    chapter_number=chapter_number,
+                    writing_notes=writing_notes,
+                    pov_character=self._resolve_pov_character(chapter_mission),
+                    user_id=user_id,
+                )
+            else:
+                rag_context = await self._get_rag_context(
+                    project_id=project_id,
+                    outline_title=outline_title,
+                    outline_summary=outline_summary,
+                    writing_notes=writing_notes,
+                    user_id=user_id,
+                )
+                rag_stats = {
+                    "mode": "simple",
+                    "chunks": len(rag_context.get("chunks", [])) if rag_context else 0,
+                    "summaries": len(rag_context.get("summaries", [])) if rag_context else 0,
+                }
+
         chapter.generation_progress = 28
         chapter.generation_step = "director_mission"
         chapter.generation_step_index = 2
         await self.session.commit()
+        logger.info("[%s] ch%s ▶ [2/7] 28%% 生成章节导演脚本...", project_id[:8], chapter_number)
 
         allowed_new_characters = chapter_mission.get("allowed_new_characters", []) if chapter_mission else []
 
@@ -218,34 +259,6 @@ class PipelineOrchestrator:
                 involved_characters=introduced_characters,
             )
 
-        project_memory_text = await self._get_project_memory_text(project_id)
-
-        rag_context = None
-        knowledge_context = None
-        rag_stats = None
-        if config.enable_rag:
-            if config.rag_mode == "two_stage":
-                knowledge_context, rag_stats = await self._get_two_stage_rag_context(
-                    project_id=project_id,
-                    chapter_number=chapter_number,
-                    writing_notes=writing_notes,
-                    pov_character=self._resolve_pov_character(chapter_mission),
-                    user_id=user_id,
-                )
-            else:
-                rag_context = await self._get_rag_context(
-                    project_id=project_id,
-                    outline_title=outline_title,
-                    outline_summary=outline_summary,
-                    writing_notes=writing_notes,
-                    user_id=user_id,
-                )
-                rag_stats = {
-                    "mode": "simple",
-                    "chunks": len(rag_context.get("chunks", [])) if rag_context else 0,
-                    "summaries": len(rag_context.get("summaries", [])) if rag_context else 0,
-                }
-
         writer_prompt = await self.prompt_service.get_prompt("writing_v2")
         if not writer_prompt:
             writer_prompt = await self.prompt_service.get_prompt("writing")
@@ -279,6 +292,7 @@ class PipelineOrchestrator:
         chapter.generation_step = "draft_generation"
         chapter.generation_step_index = 4
         await self.session.commit()
+        logger.info("[%s] ch%s ▶ [4/7] 55%% 正在生成草稿 (x%d 版本)...", project_id[:8], chapter_number, config.version_count)
 
         version_count = config.version_count
         version_style_hints = self._resolve_style_hints(enhanced_context, version_count)
@@ -325,6 +339,7 @@ class PipelineOrchestrator:
         chapter.generation_step = "quality_review"
         chapter.generation_step_index = 5
         await self.session.commit()
+        logger.info("[%s] ch%s ▶ [5/7] 86%% 质量审查 (AI评审/自评/一致性)...", project_id[:8], chapter_number)
         best_version_index, ai_review_result = await self._run_ai_review(
             versions=versions,
             chapter_mission=chapter_mission,
@@ -347,10 +362,12 @@ class PipelineOrchestrator:
             best_version_index = 0
 
         if versions:
+            best_version_index = max(0, min(best_version_index, len(versions) - 1))
             best_version = versions[best_version_index]
             best_content = best_version["content"]
 
             if enhanced_flow and config.enable_six_dimension:
+                logger.info("[%s] ch%s   → 六维评审...", project_id[:8], chapter_number)
                 review_result = await enhanced_flow.post_generation_review(
                     project_id=project_id,
                     chapter_number=chapter_number,
@@ -362,6 +379,7 @@ class PipelineOrchestrator:
                 review_summaries["enhanced_review"] = review_result
 
             if config.enable_self_critique:
+                logger.info("[%s] ch%s   → 自我评审...", project_id[:8], chapter_number)
                 best_content, critique_summary = await self._run_self_critique(
                     best_content,
                     user_id=user_id,
@@ -373,6 +391,7 @@ class PipelineOrchestrator:
                 review_summaries["self_critique"] = critique_summary
 
             if config.enable_reader_sim:
+                logger.info("[%s] ch%s   → 读者模拟...", project_id[:8], chapter_number)
                 reader_feedback = await self._run_reader_simulation(
                     best_content,
                     chapter_number=chapter_number,
@@ -382,6 +401,7 @@ class PipelineOrchestrator:
                 review_summaries["reader_simulator"] = reader_feedback
 
             if config.enable_consistency:
+                logger.info("[%s] ch%s   → 一致性检查...", project_id[:8], chapter_number)
                 best_content, consistency_report = await self._run_consistency_check(
                     project_id=project_id,
                     chapter_text=best_content,
@@ -390,6 +410,7 @@ class PipelineOrchestrator:
                 review_summaries["consistency"] = consistency_report
 
             if config.enable_optimizer:
+                logger.info("[%s] ch%s   → 文本优化...", project_id[:8], chapter_number)
                 best_content, optimizer_report = await self._run_optimizer(
                     best_content,
                     user_id=user_id,
@@ -402,6 +423,7 @@ class PipelineOrchestrator:
                 target_word_count=target_word_count,
                 configured_enrichment=config.enable_enrichment,
             ):
+                logger.info("[%s] ch%s   → 内容扩写...", project_id[:8], chapter_number)
                 best_content, enrichment_report = await self._run_enrichment(
                     best_content,
                     user_id=user_id,
@@ -415,11 +437,12 @@ class PipelineOrchestrator:
             best_version.setdefault("metadata", {})["review_summaries"] = review_summaries
 
         contents = [v.get("content", "") for v in versions]
-        metadata = [v.get("metadata") for v in versions]
+        metadata: List[Dict[str, Any]] = [v.get("metadata") or {} for v in versions]
         chapter.generation_progress = 96
         chapter.generation_step = "persist_versions"
         chapter.generation_step_index = 6
         await self.session.commit()
+        logger.info("[%s] ch%s ▶ [6/7] 96%% 持久化版本...", project_id[:8], chapter_number)
         versions_models = await self.novel_service.replace_chapter_versions(chapter, contents, metadata)
 
         variants = []
@@ -431,6 +454,12 @@ class PipelineOrchestrator:
                 "metadata": versions[idx].get("metadata"),
             }
             variants.append(variant)
+
+        logger.info(
+            "[%s] ch%s ✓ [7/7] 100%% 完成 (最佳版本=%d, 共%d字)",
+            project_id[:8], chapter_number, best_version_index,
+            self._count_text_length(versions[best_version_index].get("content", "")) if versions else 0,
+        )
 
         return {
             "project_id": project_id,
@@ -496,6 +525,10 @@ class PipelineOrchestrator:
             config.enable_six_dimension = False
             config.enable_reader_sim = False
             config.enable_self_critique = False
+            for key in ("enable_self_critique", "enable_reader_sim", "enable_six_dimension", "enable_enrichment"):
+                if flow_config.get(key) is True:
+                    logger.warning("ultimate preset: overriding %s=True → False", key)
+                    flow_config[key] = False
 
         return config
 
@@ -601,8 +634,9 @@ class PipelineOrchestrator:
                 pass
 
         repo = SystemConfigRepository(self.session)
+        records = await repo.get_by_keys(("writer.chapter_versions", "writer.version_count"))
         for key in ("writer.chapter_versions", "writer.version_count"):
-            record = await repo.get_by_key(key)
+            record = records.get(key)
             if record and record.value:
                 try:
                     val = int(record.value)
@@ -632,33 +666,47 @@ class PipelineOrchestrator:
         chapters: List[Chapter],
         user_id: int,
     ) -> Dict[str, Any]:
-        completed_summaries = []
+        prev_chapters = [
+            c for c in chapters
+            if c.chapter_number < chapter_number
+            and c.selected_version is not None
+            and c.selected_version.content
+        ]
+        need_summary = [c for c in prev_chapters if not c.real_summary]
+
+        if need_summary:
+            sem = asyncio.Semaphore(3)
+
+            async def _summarize(content: str) -> str:
+                async with sem:
+                    async with AsyncSessionLocal() as iso_session:
+                        svc = LLMService(iso_session)
+                        raw = await svc.get_summary(content, temperature=0.15, user_id=user_id, timeout=180.0)
+                        return remove_think_tags(raw)
+
+            results = await asyncio.gather(
+                *(_summarize(c.selected_version.content) for c in need_summary),
+                return_exceptions=True,
+            )
+            for chapter_obj, result in zip(need_summary, results):
+                if isinstance(result, Exception):
+                    logger.warning("章节 %d 摘要生成失败，跳过: %s", chapter_obj.chapter_number, result)
+                else:
+                    chapter_obj.real_summary = result
+            await self.session.commit()
+
         completed_chapters = []
+        completed_summaries = []
         latest_prev_number = -1
         previous_summary_text = ""
         previous_tail_excerpt = ""
 
-        for existing in chapters:
-            if existing.chapter_number >= chapter_number:
-                continue
-            if existing.selected_version is None or not existing.selected_version.content:
-                continue
-            if not existing.real_summary:
-                summary = await self.llm_service.get_summary(
-                    existing.selected_version.content,
-                    temperature=0.15,
-                    user_id=user_id,
-                    timeout=180.0,
-                )
-                existing.real_summary = remove_think_tags(summary)
-                await self.session.commit()
-
+        for existing in prev_chapters:
+            _ol = outlines_map.get(existing.chapter_number)
             completed_chapters.append(
                 {
                     "chapter_number": existing.chapter_number,
-                    "title": outlines_map.get(existing.chapter_number).title
-                    if outlines_map.get(existing.chapter_number)
-                    else f"第{existing.chapter_number}章",
+                    "title": _ol.title if _ol else f"第{existing.chapter_number}章",
                     "summary": existing.real_summary,
                 }
             )
@@ -736,18 +784,15 @@ class PipelineOrchestrator:
 """
 
         try:
-            response = await self.llm_service.get_llm_response(
+            mission = await StructuredLLMService(self.llm_service).generate_json(
                 system_prompt=plan_prompt,
-                conversation_history=[{"role": "user", "content": plan_input}],
+                user_content=plan_input,
                 temperature=0.3,
                 user_id=user_id,
                 role="writer",
                 content_rating=content_rating,
                 timeout=120.0,
             )
-            cleaned = remove_think_tags(response)
-            normalized = unwrap_markdown_json(cleaned)
-            mission = json.loads(normalized)
             logger.info("章节导演脚本生成完成: macro_beat=%s", mission.get("macro_beat"))
             return mission
         except Exception as exc:
@@ -922,11 +967,7 @@ class PipelineOrchestrator:
             hints = enhanced_context["version_style_hints"]
             if isinstance(hints, list) and hints:
                 return hints[:version_count]
-        return [
-            "情绪更细腻，节奏更慢，多写内心戏和感官描写",
-            "冲突更强，节奏更快，多写动作和对话",
-            "悬念更重，多埋伏笔，结尾钩子更强",
-        ][:version_count]
+        return _DEFAULT_STYLE_HINTS[:version_count]
 
     @staticmethod
     def _resolve_pov_character(chapter_mission: Optional[dict]) -> Optional[str]:
@@ -943,27 +984,42 @@ class PipelineOrchestrator:
         if not version_factories:
             return []
 
-        tasks = [asyncio.create_task(factory()) for factory in version_factories]
-        versions: List[Optional[Dict[str, Any]]] = [None] * len(tasks)
+        if self._should_serialize_version_generation():
+            serial_versions: List[Dict[str, Any]] = []
+            for index, factory in enumerate(version_factories):
+                version = await factory()
+                serial_versions.append(version)
+                chapter.generation_progress = 55 + int(((index + 1) / len(version_factories)) * 25)
+                chapter.generation_step = "draft_generation"
+                chapter.generation_step_index = 4
+                await self.session.commit()
+            return serial_versions
+
+        tasks = [asyncio.ensure_future(factory()) for factory in version_factories]
+        parallel_results: List[Optional[Dict[str, Any]]] = [None] * len(tasks)
         completed = 0
 
         try:
             for task in asyncio.as_completed(tasks):
                 version = await task
-                versions[version["index"]] = version
+                parallel_results[version["index"]] = version
                 completed += 1
                 chapter.generation_progress = 55 + int((completed / len(tasks)) * 25)
                 chapter.generation_step = "draft_generation"
                 chapter.generation_step_index = 4
                 await self.session.commit()
-        except Exception:
+        except BaseException:
             for task in tasks:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
 
-        return [item for item in versions if item is not None]
+        return [item for item in parallel_results if item is not None]
+
+    @staticmethod
+    def _should_serialize_version_generation() -> bool:
+        return settings.is_sqlite_backend
 
     async def _generate_single_version_with_isolated_session(
         self,
@@ -1018,6 +1074,8 @@ class PipelineOrchestrator:
                 target_word_count=target_word_count,
             )
             metadata["preview"] = preview_meta
+            if not content and preview_meta.get("status") == "preview_evaluation_failed":
+                raise RuntimeError("章节预览未通过质量评审，生成终止")
 
         if not content:
             content = await self._generate_with_gradient_retry(
@@ -1423,8 +1481,11 @@ class PipelineOrchestrator:
         target_word_count: int = 3000,
         content_rating: Optional[str] = None,
         target_ratio: float = 0.8,
-        max_rounds: int = 5,
+        max_rounds: int = 3,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        if target_word_count <= 0:
+            return chapter_content, None
+        max_enrichment_attempts = min(max_rounds, 3)
         service = EnrichmentService(self.session, self.llm_service)
         current_content = self._sanitize_enrichment_output(chapter_content)
         original_word_count = self._count_text_length(current_content)
@@ -1432,7 +1493,7 @@ class PipelineOrchestrator:
         threshold_word_count = int(target_word_count * target_ratio)
         rounds = 0
 
-        while current_word_count < threshold_word_count and rounds < max_rounds:
+        while current_word_count < threshold_word_count and rounds < max_enrichment_attempts:
             result = await service.check_and_enrich(
                 chapter_text=current_content,
                 target_word_count=target_word_count,

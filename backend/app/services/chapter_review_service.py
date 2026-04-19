@@ -13,6 +13,7 @@ from sqlalchemy import select, and_, desc
 
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .structured_llm_service import StructuredLLMService
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class ChapterReviewService:
         self.db = db
         self.llm_service = llm_service
         self.prompt_service = prompt_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
     def should_trigger_review(
         self,
@@ -107,10 +109,17 @@ class ChapterReviewService:
         
         # 5. 生成综合建议
         result["recommendations"] = self._generate_recommendations(result)
-        
+
         # 6. 确定优先行动
         result["priority_actions"] = self._determine_priority_actions(result)
-        
+
+        # C7: expose flat score summary so callers can persist without re-parsing
+        result["review_scores"] = {
+            "pacing_score": result["pacing_analysis"].get("overall_pacing_score"),
+            "consistency_score": result["consistency_check"].get("consistency_score"),
+            "foreshadowing_overdue": result["foreshadowing_analysis"].get("overdue_count", 0),
+        }
+
         return result
 
     async def _analyze_pacing(
@@ -159,11 +168,7 @@ class ChapterReviewService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return self.structured_llm_service.parse_json(response)
         except Exception as e:
             logger.warning(f"节奏分析失败: {e}")
         
@@ -226,11 +231,7 @@ class ChapterReviewService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return self.structured_llm_service.parse_json(response)
         except Exception as e:
             logger.warning(f"角色发展分析失败: {e}")
         
@@ -347,11 +348,7 @@ class ChapterReviewService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return self.structured_llm_service.parse_json(response)
         except Exception as e:
             logger.warning(f"一致性检查失败: {e}")
         
@@ -495,11 +492,7 @@ class ChapterReviewService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return self.structured_llm_service.parse_json(response)
         except Exception as e:
             logger.warning(f"生成调整计划失败: {e}")
         

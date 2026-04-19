@@ -26,6 +26,22 @@
         </button>
         <button
           type="button"
+          class="flex items-center gap-1 px-3 py-2 text-sm font-medium text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
+          :disabled="aiBusy || needsRegenCount === 0"
+          @click="$emit('reroll-marked')"
+        >
+          重抽待重做章节
+        </button>
+        <button
+          type="button"
+          class="flex items-center gap-1 px-3 py-2 text-sm font-medium text-fuchsia-700 bg-fuchsia-50 hover:bg-fuchsia-100 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
+          :disabled="aiBusy || selectedChapterNumbers.length === 0"
+          @click="$emit('reroll-selected', selectedChapterNumbers)"
+        >
+          重抽已选章节
+        </button>
+        <button
+          type="button"
           class="flex items-center gap-1 px-3 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg"
           @click="$emit('add')"
         >
@@ -67,11 +83,61 @@
           {{ chapter.chapter_number }}
         </span>
         <div class="bg-white/95 rounded-2xl border border-slate-200 shadow-sm p-5">
+          <div v-if="editable" class="mb-3 flex justify-end">
+            <label class="inline-flex items-center gap-2 text-xs text-slate-500">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                :checked="selectedChapterNumbers.includes(chapter.chapter_number)"
+                @change="toggleSelection(chapter.chapter_number)"
+              />
+              选中
+            </label>
+          </div>
           <div class="flex items-center justify-between gap-4">
             <h3 class="text-lg font-semibold text-slate-900">{{ chapter.title || `第${chapter.chapter_number}章` }}</h3>
-            <span class="text-xs text-slate-400">#{{ chapter.chapter_number }}</span>
+            <div class="flex items-center gap-2">
+              <span
+                class="text-xs rounded-full px-2 py-1"
+                :class="statusClass(chapter.status)"
+              >
+                {{ statusLabel(chapter.status) }}
+              </span>
+              <span class="text-xs text-slate-400">#{{ chapter.chapter_number }}</span>
+            </div>
           </div>
           <p class="mt-3 text-sm text-slate-600 leading-6 whitespace-pre-line">{{ chapter.summary || '暂无摘要' }}</p>
+          <div v-if="editable" class="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+              @click="$emit('mark-status', { chapterNumber: chapter.chapter_number, status: 'approved' })"
+            >
+              标记满意
+            </button>
+            <button
+              type="button"
+              class="px-3 py-1.5 text-xs font-medium rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"
+              @click="$emit('mark-status', { chapterNumber: chapter.chapter_number, status: 'needs_regen' })"
+            >
+              标记重做
+            </button>
+            <button
+              type="button"
+              class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200"
+              @click="$emit('mark-status', { chapterNumber: chapter.chapter_number, status: 'draft' })"
+            >
+              重置为草稿
+            </button>
+            <button
+              type="button"
+              class="px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+              :disabled="aiBusy"
+              @click="$emit('reroll-single', chapter.chapter_number)"
+            >
+              重抽本章
+            </button>
+          </div>
         </div>
       </li>
       <li v-if="!outline.length" class="ml-6 text-slate-400 text-sm">暂无章节大纲</li>
@@ -80,12 +146,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 interface OutlineItem {
   chapter_number: number
   title: string
   summary: string
+  status?: 'draft' | 'approved' | 'needs_regen'
 }
 
 interface MissingRange {
@@ -112,6 +179,10 @@ const emit = defineEmits<{
   (e: 'add'): void
   (e: 'fill-missing'): void
   (e: 'expand-ai'): void
+  (e: 'reroll-marked'): void
+  (e: 'reroll-selected', chapterNumbers: number[]): void
+  (e: 'reroll-single', chapterNumber: number): void
+  (e: 'mark-status', payload: { chapterNumber: number; status: 'draft' | 'approved' | 'needs_regen' }): void
 }>()
 
 const emitEdit = (field: string, title: string, value: any) => {
@@ -121,6 +192,46 @@ const emitEdit = (field: string, title: string, value: any) => {
 
 const missingRanges = computed(() => props.missingRanges)
 const missingCount = computed(() => props.missingCount)
+const needsRegenCount = computed(() => props.outline.filter((item) => item.status === 'needs_regen').length)
+const selectedChapterNumbers = ref<number[]>([])
+
+watch(
+  () => props.outline.map((item) => item.chapter_number),
+  (numbers) => {
+    selectedChapterNumbers.value = selectedChapterNumbers.value.filter((item) => numbers.includes(item))
+  },
+  { immediate: true }
+)
+
+const toggleSelection = (chapterNumber: number) => {
+  if (selectedChapterNumbers.value.includes(chapterNumber)) {
+    selectedChapterNumbers.value = selectedChapterNumbers.value.filter((item) => item !== chapterNumber)
+    return
+  }
+  selectedChapterNumbers.value = [...selectedChapterNumbers.value, chapterNumber].sort((a, b) => a - b)
+}
+
+const statusLabel = (status?: OutlineItem['status']) => {
+  switch (status) {
+    case 'approved':
+      return '已锁定'
+    case 'needs_regen':
+      return '待重做'
+    default:
+      return '草稿'
+  }
+}
+
+const statusClass = (status?: OutlineItem['status']) => {
+  switch (status) {
+    case 'approved':
+      return 'bg-emerald-50 text-emerald-700'
+    case 'needs_regen':
+      return 'bg-rose-50 text-rose-700'
+    default:
+      return 'bg-slate-100 text-slate-700'
+  }
+}
 </script>
 
 <script lang="ts">

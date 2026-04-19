@@ -53,6 +53,7 @@ class ChapterOutline(BaseModel):
     chapter_number: int
     title: str
     summary: str
+    status: Literal["draft", "approved", "needs_regen"] = "draft"
 
 
 class Chapter(ChapterOutline):
@@ -222,14 +223,25 @@ class GenerateOutlineRequest(BaseModel):
 
 
 class FillMissingOutlineRequest(BaseModel):
-    batch_size: Optional[int] = None
+    batch_size: Optional[int] = Field(default=None, gt=0)
 
 
 class ExpandOutlineRequest(BaseModel):
     start_chapter: Optional[int] = None
     end_chapter: Optional[int] = None
-    batch_size: Optional[int] = None
-    min_summary_length: Optional[int] = None
+    batch_size: Optional[int] = Field(default=None, gt=0)
+    min_summary_length: Optional[int] = Field(default=None, gt=0)
+
+
+class UpdateOutlineStatusRequest(BaseModel):
+    chapter_numbers: List[int]
+    status: Literal["draft", "approved", "needs_regen"]
+
+
+class RerollOutlineRequest(BaseModel):
+    chapter_numbers: Optional[List[int]] = None
+    batch_size: Optional[int] = Field(default=None, gt=0)
+    only_needs_regen: bool = True
 
 
 class BlueprintPatch(BaseModel):

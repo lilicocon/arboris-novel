@@ -4,6 +4,7 @@
 提供角色状态追踪、时间线管理、因果链维护的核心功能。
 """
 from typing import Optional, List, Dict, Any
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -19,8 +20,12 @@ from ..models.memory_layer import (
 )
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .structured_llm_service import StructuredLLMService
 
 logger = logging.getLogger(__name__)
+
+# M11: per-project locks to prevent concurrent memory updates for the same project
+_update_locks: dict[str, asyncio.Lock] = {}
 
 
 class MemoryLayerService:
@@ -30,6 +35,7 @@ class MemoryLayerService:
         self.db = db
         self.llm_service = llm_service
         self.prompt_service = prompt_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
     # ===== 角色状态管理 =====
 
@@ -181,15 +187,20 @@ class MemoryLayerService:
             )
             
             # 解析 JSON
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result.get("character_states", [])
+            result = self.structured_llm_service.parse_json(response)
+            extracted_states = result.get("character_states", [])
+            # H16: warn for any requested character absent from extracted states
+            extracted_names = {s.get("character_name") for s in extracted_states if s.get("character_name")}
+            for name in character_names:
+                if name not in extracted_names:
+                    logger.warning(
+                        "Character %s not found in extracted states for chapter %s",
+                        name, chapter_number,
+                    )
+            return extracted_states
         except Exception as e:
             logger.warning(f"提取角色状态失败: {e}")
-        
+
         return []
 
     # ===== 时间线管理 =====
@@ -286,12 +297,8 @@ class MemoryLayerService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result.get("events", [])
+            result = self.structured_llm_service.parse_json(response)
+            return result.get("events", [])
         except Exception as e:
             logger.warning(f"提取时间线事件失败: {e}")
         
@@ -476,6 +483,24 @@ class MemoryLayerService:
         user_id: int
     ) -> Dict[str, Any]:
         """章节完成后更新记忆层"""
+        async with _update_locks.setdefault(project_id, asyncio.Lock()):
+            return await self._update_memory_after_chapter_locked(
+                project_id=project_id,
+                chapter_number=chapter_number,
+                chapter_content=chapter_content,
+                character_names=character_names,
+                user_id=user_id,
+            )
+
+    async def _update_memory_after_chapter_locked(
+        self,
+        project_id: str,
+        chapter_number: int,
+        chapter_content: str,
+        character_names: List[str],
+        user_id: int,
+    ) -> Dict[str, Any]:
+        """章节完成后更新记忆层（已持锁）"""
         results = {
             "character_states_updated": 0,
             "timeline_events_added": 0,
@@ -566,11 +591,7 @@ class MemoryLayerService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return self.structured_llm_service.parse_json(response)
         except Exception as e:
             logger.warning(f"一致性检查失败: {e}")
         

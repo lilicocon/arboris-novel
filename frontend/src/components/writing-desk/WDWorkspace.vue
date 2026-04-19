@@ -25,6 +25,21 @@
 
           <div class="flex items-center gap-2">
             <button
+              v-if="nextChapterNumber !== null"
+              @click="$emit('goToNextChapter')"
+              class="md-btn md-btn-outlined md-ripple flex items-center gap-2 whitespace-nowrap"
+            >
+              下一章
+            </button>
+            <button
+              v-if="nextChapterNumber !== null && canGenerateChapter(nextChapterNumber)"
+              @click="$emit('generateChapter', nextChapterNumber)"
+              :disabled="isSelectedChapterGeneratingLike"
+              class="md-btn md-btn-tonal md-ripple flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
+            >
+              生成下一章
+            </button>
+            <button
               v-if="isChapterCompleted(selectedChapterNumber)"
               @click="openEditModal"
               class="md-btn md-btn-tonal md-ripple flex items-center gap-2 whitespace-nowrap"
@@ -72,6 +87,7 @@
           @update:selectedVersionIndex="$emit('update:selectedVersionIndex', $event)"
           @showVersionDetail="$emit('showVersionDetail', $event)"
           @confirmVersionSelection="$emit('confirmVersionSelection')"
+          @confirmVersionSelectionAndGenerateNext="$emit('confirmVersionSelectionAndGenerateNext')"
           @generateChapter="$emit('generateChapter', $event)"
           @showVersionSelector="$emit('showVersionSelector')"
           @regenerateChapter="$emit('regenerateChapter')"
@@ -175,6 +191,8 @@ const emit = defineEmits([
   'update:selectedVersionIndex',
   'showVersionDetail',
   'confirmVersionSelection',
+  'confirmVersionSelectionAndGenerateNext',
+  'goToNextChapter',
   'generateChapter',
   'showVersionSelector',
   'showEvaluationDetail',
@@ -464,6 +482,16 @@ onUnmounted(() => {
   stopPolling()
 })
 
+const nextChapterNumber = computed(() => {
+  if (props.selectedChapterNumber === null || !props.project?.blueprint?.chapter_outline) {
+    return null
+  }
+  const numbers = [...props.project.blueprint.chapter_outline]
+    .sort((a, b) => a.chapter_number - b.chapter_number)
+    .map((item) => item.chapter_number)
+  return numbers.find((number) => number > props.selectedChapterNumber!) ?? null
+})
+
 const currentComponentProps = computed(() => {
   if (!props.selectedChapterNumber) {
     return {}
@@ -495,7 +523,8 @@ const currentComponentProps = computed(() => {
       selectedVersionIndex: props.selectedVersionIndex,
       isSelectingVersion: props.isSelectingVersion,
       evaluatingChapter: props.evaluatingChapter,
-      isEvaluationFailed: isChapterEvaluationFailed(props.selectedChapterNumber)
+      isEvaluationFailed: isChapterEvaluationFailed(props.selectedChapterNumber),
+      hasNextChapter: nextChapterNumber.value !== null
     }
   }
   if (hasSelectedChapterContent.value) {

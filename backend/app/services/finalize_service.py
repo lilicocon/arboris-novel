@@ -24,6 +24,7 @@ from ..models.chapter_blueprint import ChapterBlueprint
 from ..models.novel import ChapterOutline
 from ..models.novel import BlueprintCharacter, NovelBlueprint
 from .chapter_ingest_service import ChapterIngestionService
+from .foreshadowing_tracker_service import ForeshadowingTrackerService
 from .llm_service import LLMService
 from .vector_store_service import VectorStoreService
 
@@ -150,11 +151,13 @@ class FinalizeService:
         self,
         db: AsyncSession,
         llm_service: LLMService,
-        vector_store_service: Optional[VectorStoreService] = None
+        vector_store_service: Optional[VectorStoreService] = None,
+        prompt_service=None,
     ):
         self.db = db
         self.llm_service = llm_service
         self.vector_store_service = vector_store_service
+        self.prompt_service = prompt_service
     
     async def finalize_chapter(
         self,
@@ -258,7 +261,23 @@ class FinalizeService:
             
             # 8. 更新章节蓝图状态
             await self._update_blueprint_status(project_id, chapter_number)
-            
+
+            # 9. 更新伏笔状态
+            if self.prompt_service is not None:
+                try:
+                    fs_service = ForeshadowingTrackerService(
+                        db=self.db,
+                        llm_service=self.llm_service,
+                        prompt_service=self.prompt_service,
+                    )
+                    await fs_service.get_active_foreshadowings(
+                        project_id=project_id,
+                        current_chapter=chapter_number,
+                    )
+                    result["updates"]["foreshadowing"] = "checked"
+                except Exception as fs_err:
+                    logger.warning("伏笔状态检查失败 (non-fatal): %s", fs_err)
+
             await self.db.commit()
             logger.info(f"定稿处理完成: project={project_id}, chapter={chapter_number}")
             

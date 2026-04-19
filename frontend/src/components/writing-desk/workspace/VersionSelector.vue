@@ -173,6 +173,14 @@
             {{ isCurrentVersion(selectedVersionIndex) ? '当前版本' : '确认选择此版本' }}
           </span>
         </button>
+        <button
+          v-if="hasNextChapter"
+          @click="$emit('confirmVersionSelectionAndGenerateNext')"
+          :disabled="!availableVersions?.[selectedVersionIndex]?.content || isCurrentVersion(selectedVersionIndex) || isSelectingVersion"
+          class="md-btn md-btn-outlined md-ripple disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+        >
+          确认并生成下一章
+        </button>
       </div>
     </div>
   </div>
@@ -190,11 +198,20 @@ interface Props {
   evaluatingChapter: number | null
   isSelectingVersion?: boolean
   isEvaluationFailed?: boolean
+  hasNextChapter?: boolean
 }
 
 const props = defineProps<Props>()
 
-defineEmits(['hideVersionSelector', 'update:selectedVersionIndex', 'showVersionDetail', 'confirmVersionSelection', 'evaluateChapter', 'showEvaluationDetail'])
+defineEmits([
+  'hideVersionSelector',
+  'update:selectedVersionIndex',
+  'showVersionDetail',
+  'confirmVersionSelection',
+  'confirmVersionSelectionAndGenerateNext',
+  'evaluateChapter',
+  'showEvaluationDetail'
+])
 
 
 const isCurrentVersion = (versionIndex: number) => {

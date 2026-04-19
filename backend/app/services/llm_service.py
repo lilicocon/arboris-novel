@@ -1,6 +1,7 @@
 # AIMETA P=LLM服务_大模型调用封装|R=API调用_流式生成|NR=不含业务逻辑|E=LLMService|X=internal|A=服务类|D=openai,httpx|S=net|RD=./README.ai
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -33,6 +34,8 @@ class LLMService:
         self.system_config_repo = SystemConfigRepository(session)
         self.usage_service = UsageService(session)
         self._embedding_dimensions: Dict[str, int] = {}
+        self._config_cache: Dict[str, Optional[str]] = {}
+        self._user_llm_config_cache: Dict[int, tuple] = {}  # user_id -> (config, timestamp)
 
     async def get_llm_response(
         self,
@@ -207,6 +210,46 @@ class LLMService:
             )
             raise HTTPException(status_code=503, detail=detail) from exc
 
+        # Some models (e.g. grok-4.20-auto) silently return empty content when
+        # response_format=json_object is set in streaming mode. Retry without it.
+        if not full_response and finish_reason == "stop" and response_format:
+            logger.warning(
+                "LLM empty response with response_format=%s, retrying without: model=%s user_id=%s",
+                response_format,
+                config.get("model"),
+                user_id,
+            )
+            full_response = ""
+            finish_reason = None
+            try:
+                async for part in client.stream_chat(
+                    messages=chat_messages,
+                    model=config.get("model"),
+                    temperature=temperature,
+                    timeout=int(timeout),
+                    response_format=None,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
+                ):
+                    if part.get("content"):
+                        full_response += part["content"]
+                    if part.get("finish_reason"):
+                        finish_reason = part["finish_reason"]
+            except Exception as exc:
+                logger.error(
+                    "LLM retry without response_format also failed: model=%s user_id=%s",
+                    config.get("model"),
+                    user_id,
+                    exc_info=exc,
+                )
+                if isinstance(exc, InternalServerError):
+                    raise HTTPException(status_code=503, detail="AI 服务内部错误，请稍后重试") from exc
+                if isinstance(exc, (httpx.RemoteProtocolError, httpx.ReadTimeout, APIConnectionError, APITimeoutError)):
+                    raise HTTPException(status_code=503, detail="AI 服务暂时不可用，请稍后重试") from exc
+                if isinstance(exc, PermissionDeniedError):
+                    raise HTTPException(status_code=503, detail="AI 服务拒绝访问，请稍后重试或更换可用 API 地址") from exc
+                raise
+
         logger.debug(
             "LLM response collected: model=%s user_id=%s finish_reason=%s preview=%s",
             config.get("model"),
@@ -239,7 +282,11 @@ class LLMService:
                 detail=f"AI 未返回有效内容（结束原因: {finish_reason or '未知'}），请稍后重试或联系管理员"
             )
 
-        await self.usage_service.increment("api_request_count")
+        try:
+            await self.usage_service.increment("api_request_count")
+        except Exception as exc:
+            logger.error("记录 usage_metrics 失败: %s", exc)
+            raise HTTPException(status_code=500, detail="Usage tracking failed") from exc
         logger.info(
             "LLM response success: model=%s user_id=%s chars=%d",
             config.get("model"),
@@ -272,7 +319,7 @@ class LLMService:
     ) -> Dict[str, Optional[str]]:
         base_config: Dict[str, Optional[str]]
         if user_id:
-            config = await self.llm_repo.get_by_user(user_id)
+            config = await self._get_user_llm_config(user_id)
             if config and (config.llm_provider_api_key or not require_api_key):
                 base_config = {
                     "api_key": config.llm_provider_api_key,
@@ -280,14 +327,10 @@ class LLMService:
                     "model": config.llm_provider_model,
                 }
             else:
-                api_key = await self._get_config_value("llm.api_key")
-                base_url = await self._get_config_value("llm.base_url")
-                model = await self._get_config_value("llm.model")
+                api_key, base_url, model = await self._get_config_values("llm.api_key", "llm.base_url", "llm.model")
                 base_config = {"api_key": api_key, "base_url": base_url, "model": model}
         else:
-            api_key = await self._get_config_value("llm.api_key")
-            base_url = await self._get_config_value("llm.base_url")
-            model = await self._get_config_value("llm.model")
+            api_key, base_url, model = await self._get_config_values("llm.api_key", "llm.base_url", "llm.model")
             base_config = {"api_key": api_key, "base_url": base_url, "model": model}
 
         overrides = resolve_llm_override(role=role, content_rating=content_rating)
@@ -307,6 +350,21 @@ class LLMService:
         return config_values
 
     @staticmethod
+    def _normalize_provider_url(url: str, suffixes: tuple) -> str:
+        """Strip any of the given path suffixes (case-insensitive) repeatedly until stable."""
+        normalized = url
+        changed = True
+        while changed:
+            changed = False
+            lower = normalized.lower()
+            for suffix in suffixes:
+                if lower.endswith(suffix):
+                    normalized = normalized[: -len(suffix)].rstrip("/")
+                    changed = True
+                    break
+        return normalized
+
+    @staticmethod
     def _normalize_ollama_host(host: Optional[str]) -> Optional[str]:
         """归一化 Ollama host，避免误填 OpenAI 风格路径（如 /v1）。"""
         if host is None:
@@ -316,17 +374,7 @@ class LLMService:
         if not normalized:
             return None
 
-        removable_suffixes = ("/v1/models", "/v1/embeddings", "/v1")
-        changed = True
-        while changed:
-            changed = False
-            normalized_lower = normalized.lower()
-            for suffix in removable_suffixes:
-                if normalized_lower.endswith(suffix):
-                    normalized = normalized[: -len(suffix)].rstrip("/")
-                    changed = True
-                    break
-
+        normalized = LLMService._normalize_provider_url(normalized, ("/v1/models", "/v1/embeddings", "/v1"))
         return normalized or None
 
     @staticmethod
@@ -357,16 +405,16 @@ class LLMService:
         if not trimmed:
             return None
 
-        lowered = trimmed.lower()
-        if lowered.endswith("/embeddings"):
-            return trimmed
+        # Strip any trailing /embeddings so we can reconstruct the canonical path.
+        stripped = LLMService._normalize_provider_url(trimmed, ("/embeddings",))
+        lowered = stripped.lower()
         if lowered.endswith("/v1"):
-            return f"{trimmed}/embeddings"
+            return f"{stripped}/embeddings"
 
-        parsed = urlparse(trimmed)
+        parsed = urlparse(stripped)
         if parsed.path in {"", "/"}:
-            return f"{trimmed}/v1/embeddings"
-        return f"{trimmed}/embeddings"
+            return f"{stripped}/v1/embeddings"
+        return f"{stripped}/embeddings"
 
     async def _request_ollama_embedding(
         self,
@@ -420,7 +468,7 @@ class LLMService:
         model: Optional[str] = None,
     ) -> List[float]:
         """生成文本向量，用于章节 RAG 检索，支持 openai 与 ollama 双提供方。"""
-        user_llm_config = await self.llm_repo.get_by_user(user_id) if user_id else None
+        user_llm_config = await self._get_user_llm_config(user_id) if user_id else None
         user_embedding_model = user_llm_config.embedding_provider_model if user_llm_config else None
         user_embedding_base_url = user_llm_config.embedding_provider_url if user_llm_config else None
         user_embedding_api_key = user_llm_config.embedding_provider_api_key if user_llm_config else None
@@ -565,10 +613,21 @@ class LLMService:
         vector_size_str = await self._get_config_value("embedding.model_vector_size")
         return int(vector_size_str) if vector_size_str else None
 
+    async def _get_user_llm_config(self, user_id: int) -> Any:
+        cached = self._user_llm_config_cache.get(user_id)
+        if cached is None or time.time() - cached[1] > 300:
+            config = await self.llm_repo.get_by_user(user_id)
+            self._user_llm_config_cache[user_id] = (config, time.time())
+        return self._user_llm_config_cache[user_id][0]
+
+    async def _get_config_values(self, *keys: str) -> List[Optional[str]]:
+        missing = [k for k in keys if k not in self._config_cache]
+        if missing:
+            records = await self.system_config_repo.get_by_keys(missing)
+            for k in missing:
+                rec = records.get(k)
+                self._config_cache[k] = rec.value if rec else os.getenv(k.upper().replace(".", "_"))
+        return [self._config_cache.get(k) for k in keys]
+
     async def _get_config_value(self, key: str) -> Optional[str]:
-        record = await self.system_config_repo.get_by_key(key)
-        if record:
-            return record.value
-        # 兼容环境变量，首次迁移时无需立即写入数据库
-        env_key = key.upper().replace(".", "_")
-        return os.getenv(env_key)
+        return (await self._get_config_values(key))[0]

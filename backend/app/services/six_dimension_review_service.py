@@ -18,6 +18,7 @@ from .constitution_service import ConstitutionService
 from .writer_persona_service import WriterPersonaService
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .structured_llm_service import StructuredLLMService
 
 
 class SixDimensionReviewService:
@@ -36,6 +37,7 @@ class SixDimensionReviewService:
         self.prompt_service = prompt_service
         self.constitution_service = constitution_service
         self.writer_persona_service = writer_persona_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
     async def review_chapter(
         self,
@@ -85,13 +87,8 @@ class SixDimensionReviewService:
         
         # 解析结果
         try:
-            content = response or ""
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result
-        except json.JSONDecodeError:
+            return self.structured_llm_service.parse_json(response or "")
+        except Exception:
             pass
         
         return self._create_default_result("审查完成，但结果解析失败")

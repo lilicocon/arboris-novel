@@ -187,13 +187,51 @@ class PipelineOrchestratorParallelVersionTest(unittest.IsolatedAsyncioTestCase):
         def factory(index: int):
             return lambda: version_job(index)
 
-        versions = await PipelineOrchestrator._generate_versions_in_parallel(
-            orchestrator,
-            chapter=chapter,
-            version_factories=[factory(0), factory(1)],
-        )
+        with patch(
+            "backend.app.services.pipeline_orchestrator.PipelineOrchestrator._should_serialize_version_generation",
+            return_value=False,
+        ):
+            versions = await PipelineOrchestrator._generate_versions_in_parallel(
+                orchestrator,
+                chapter=chapter,
+                version_factories=[factory(0), factory(1)],
+            )
 
         self.assertEqual(["正文0", "正文1"], [item["content"] for item in versions])
+        self.assertEqual(2, orchestrator.session.commit.await_count)
+
+    async def test_generate_versions_in_parallel_falls_back_to_serial_on_sqlite(self) -> None:
+        orchestrator = object.__new__(PipelineOrchestrator)
+        orchestrator.session = type("Session", (), {"commit": AsyncMock()})()
+        chapter = type(
+            "Chapter",
+            (),
+            {"generation_progress": 55, "generation_step": "draft_generation", "generation_step_index": 4},
+        )()
+
+        execution_order: list[str] = []
+
+        async def version_job(index: int) -> dict:
+            execution_order.append(f"start-{index}")
+            await asyncio.sleep(0)
+            execution_order.append(f"end-{index}")
+            return {"index": index, "content": f"正文{index}", "metadata": {}}
+
+        def factory(index: int):
+            return lambda: version_job(index)
+
+        with patch(
+            "backend.app.services.pipeline_orchestrator.PipelineOrchestrator._should_serialize_version_generation",
+            return_value=True,
+        ):
+            versions = await PipelineOrchestrator._generate_versions_in_parallel(
+                orchestrator,
+                chapter=chapter,
+                version_factories=[factory(0), factory(1)],
+            )
+
+        self.assertEqual(["正文0", "正文1"], [item["content"] for item in versions])
+        self.assertEqual(["start-0", "end-0", "start-1", "end-1"], execution_order)
         self.assertEqual(2, orchestrator.session.commit.await_count)
 
 

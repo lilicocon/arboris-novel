@@ -185,6 +185,10 @@
                 @add="startAddChapter"
                 @fill-missing="fillMissingOutline"
                 @expand-ai="expandOutline"
+                @reroll-marked="rerollMarkedOutline"
+                @reroll-selected="rerollSelectedOutline"
+                @reroll-single="rerollSingleOutline"
+                @mark-status="updateOutlineStatus"
               />
             </div>
           </div>
@@ -625,7 +629,8 @@ const saveNewChapter = async () => {
   const newOutline = [...existingOutline, {
     chapter_number: nextNumber,
     title: newChapterTitle.value,
-    summary: newChapterSummary.value
+    summary: newChapterSummary.value,
+    status: 'draft'
   }]
 
   try {
@@ -673,6 +678,70 @@ const expandOutline = async () => {
     await refreshOutlineRelatedSections()
   } catch (error) {
     console.error('扩写大纲失败:', error)
+  } finally {
+    outlineAiBusy.value = false
+  }
+}
+
+const updateOutlineStatus = async (payload: { chapterNumber: number; status: 'draft' | 'approved' | 'needs_regen' }) => {
+  if (props.isAdmin || outlineAiBusy.value) return
+  outlineAiBusy.value = true
+  try {
+    const updatedProject = await NovelAPI.updateOutlineStatus(projectId, [payload.chapterNumber], payload.status)
+    novelStore.setCurrentProject(updatedProject)
+    await refreshOutlineRelatedSections()
+  } catch (error) {
+    console.error('更新大纲状态失败:', error)
+  } finally {
+    outlineAiBusy.value = false
+  }
+}
+
+const rerollSingleOutline = async (chapterNumber: number) => {
+  if (props.isAdmin || outlineAiBusy.value) return
+  outlineAiBusy.value = true
+  try {
+    const updatedProject = await NovelAPI.rerollChapterOutline(projectId, {
+      chapter_numbers: [chapterNumber],
+      only_needs_regen: false
+    })
+    novelStore.setCurrentProject(updatedProject)
+    await refreshOutlineRelatedSections()
+  } catch (error) {
+    console.error('重抽单章大纲失败:', error)
+  } finally {
+    outlineAiBusy.value = false
+  }
+}
+
+const rerollMarkedOutline = async () => {
+  if (props.isAdmin || outlineAiBusy.value) return
+  outlineAiBusy.value = true
+  try {
+    const updatedProject = await NovelAPI.rerollChapterOutline(projectId, {
+      only_needs_regen: true
+    })
+    novelStore.setCurrentProject(updatedProject)
+    await refreshOutlineRelatedSections()
+  } catch (error) {
+    console.error('重抽待重做大纲失败:', error)
+  } finally {
+    outlineAiBusy.value = false
+  }
+}
+
+const rerollSelectedOutline = async (chapterNumbers: number[]) => {
+  if (props.isAdmin || outlineAiBusy.value || chapterNumbers.length === 0) return
+  outlineAiBusy.value = true
+  try {
+    const updatedProject = await NovelAPI.rerollChapterOutline(projectId, {
+      chapter_numbers: chapterNumbers,
+      only_needs_regen: false
+    })
+    novelStore.setCurrentProject(updatedProject)
+    await refreshOutlineRelatedSections()
+  } catch (error) {
+    console.error('重抽已选大纲失败:', error)
   } finally {
     outlineAiBusy.value = false
   }

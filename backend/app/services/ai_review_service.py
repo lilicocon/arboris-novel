@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 
 from ..services.llm_service import LLMService
 from ..services.prompt_service import PromptService
-from ..utils.json_utils import remove_think_tags, unwrap_markdown_json
+from ..services.structured_llm_service import StructuredLLMService
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ class AIReviewService:
     def __init__(self, llm_service: LLMService, prompt_service: PromptService):
         self.llm_service = llm_service
         self.prompt_service = prompt_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
     async def review_versions(
         self,
@@ -87,20 +88,18 @@ class AIReviewService:
         review_input = self._build_review_input(versions, chapter_mission)
 
         try:
-            response = await self.llm_service.get_llm_response(
+            payload = await self.structured_llm_service.generate_json(
                 system_prompt=review_prompt,
-                conversation_history=[{"role": "user", "content": review_input}],
+                user_content=review_input,
                 temperature=0.3,
                 user_id=user_id,
                 role="reviewer",
                 content_rating=content_rating,
                 timeout=180.0,
             )
-            cleaned = remove_think_tags(response)
-            normalized = unwrap_markdown_json(cleaned)
-            
-            result = self._parse_review_response(normalized)
-            result.raw_response = cleaned
+
+            result = self._parse_review_response(json.dumps(payload, ensure_ascii=False))
+            result.raw_response = json.dumps(payload, ensure_ascii=False)
             
             logger.info(
                 "AI 评审完成: 最佳版本=%s, 综合评分=%.1f",

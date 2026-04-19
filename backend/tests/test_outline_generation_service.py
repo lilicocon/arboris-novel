@@ -123,6 +123,75 @@ class OutlineGenerationServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list(range(1, 5)), [item.chapter_number for item in outlines])
             self.assertEqual(1, report["filled_chapters"])
 
+    async def test_update_outline_status_persists_metadata(self) -> None:
+        async with self.session_factory() as session:
+            session.add(User(id=1, username="tester", email="tester@example.com", hashed_password="hashed"))
+            session.add(NovelProject(id="project-1", user_id=1, title="测试项目"))
+            session.add_all(
+                [
+                    ChapterOutline(project_id="project-1", chapter_number=1, title="第1章", summary="摘要1"),
+                    ChapterOutline(project_id="project-1", chapter_number=2, title="第2章", summary="摘要2"),
+                ]
+            )
+            await session.commit()
+
+            service = OutlineGenerationService(
+                session=session,
+                prompt_service=AsyncMock(),
+                llm_service=AsyncMock(),
+            )
+
+            report = await service.update_outline_status(
+                project_id="project-1",
+                chapter_numbers=[2],
+                status="approved",
+            )
+
+            self.assertEqual(1, report["updated_chapters"])
+            result = await session.execute(
+                select(ChapterOutline)
+                .where(ChapterOutline.project_id == "project-1", ChapterOutline.chapter_number == 2)
+            )
+            outline = result.scalars().first()
+            self.assertEqual("approved", (outline.metadata or {}).get("status"))
+
+    async def test_reroll_outlines_only_regenerates_needs_regen_items(self) -> None:
+        async with self.session_factory() as session:
+            session.add(User(id=1, username="tester", email="tester@example.com", hashed_password="hashed"))
+            session.add(NovelProject(id="project-1", user_id=1, title="测试项目"))
+            session.add_all(
+                [
+                    ChapterOutline(project_id="project-1", chapter_number=1, title="第1章", summary="摘要1", metadata={"status": "approved"}),
+                    ChapterOutline(project_id="project-1", chapter_number=2, title="第2章", summary="摘要2", metadata={"status": "needs_regen"}),
+                    ChapterOutline(project_id="project-1", chapter_number=3, title="第3章", summary="摘要3", metadata={"status": "draft"}),
+                ]
+            )
+            await session.commit()
+
+            service = OutlineGenerationService(
+                session=session,
+                prompt_service=AsyncMock(),
+                llm_service=AsyncMock(),
+            )
+            service._request_reroll_batch = AsyncMock(
+                return_value=[
+                    {"chapter_number": 2, "title": "第2章-新", "summary": "新摘要2", "status": "draft"},
+                ]
+            )
+
+            report = await service.reroll_outlines(project_id="project-1", user_id=1)
+
+            self.assertEqual(1, report["rerolled_chapters"])
+            result = await session.execute(
+                select(ChapterOutline)
+                .where(ChapterOutline.project_id == "project-1")
+                .order_by(ChapterOutline.chapter_number)
+            )
+            outlines = result.scalars().all()
+            self.assertEqual(["第1章", "第2章-新", "第3章"], [item.title for item in outlines])
+            self.assertEqual("approved", (outlines[0].metadata or {}).get("status"))
+            self.assertEqual("draft", (outlines[1].metadata or {}).get("status"))
+
 
 if __name__ == "__main__":
     unittest.main()

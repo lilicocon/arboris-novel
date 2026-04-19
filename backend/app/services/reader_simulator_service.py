@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .structured_llm_service import StructuredLLMService
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class ReaderSimulatorService:
         self.db = db
         self.llm_service = llm_service
         self.prompt_service = prompt_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
     async def simulate_reading_experience(
         self,
@@ -182,12 +184,8 @@ class ReaderSimulatorService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result.get("thrill_points", [])
+            result = self.structured_llm_service.parse_json(response)
+            return result.get("thrill_points", [])
         except Exception as e:
             logger.warning(f"检测爽点失败: {e}")
         
@@ -247,14 +245,10 @@ class ReaderSimulatorService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                result["thrill_score"] = thrill_score
-                result["reader_type"] = reader_type.value
-                return result
+            result = self.structured_llm_service.parse_json(response)
+            result["thrill_score"] = thrill_score
+            result["reader_type"] = reader_type.value
+            return result
         except Exception as e:
             logger.warning(f"模拟{profile['name']}失败: {e}")
         
@@ -338,11 +332,7 @@ class ReaderSimulatorService:
                 timeout=60.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return self.structured_llm_service.parse_json(response)
         except Exception as e:
             logger.warning(f"评估钩子强度失败: {e}")
         

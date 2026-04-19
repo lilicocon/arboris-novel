@@ -132,7 +132,7 @@ async def get_chapter(
     current_user: UserInDB = Depends(get_current_user),
 ) -> ChapterSchema:
     novel_service = NovelService(session)
-    logger.info("用户 %s 获取项目 %s 第 %s 章", current_user.id, project_id, chapter_number)
+    logger.debug("用户 %s 获取项目 %s 第 %s 章", current_user.id, project_id, chapter_number)
     return await novel_service.get_chapter_schema(project_id, current_user.id, chapter_number)
 
 

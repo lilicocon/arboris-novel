@@ -14,7 +14,7 @@
     />
 
     <!-- 主要内容区域 -->
-    <div class="flex-1 w-full px-4 sm:px-6 lg:px-8 py-6 overflow-hidden">
+    <div class="flex-1 w-full px-4 sm:px-6 lg:px-8 py-6 pb-24 lg:pb-6 overflow-hidden">
       <!-- 加载状态 -->
       <div v-if="novelStore.isLoading" class="h-full flex justify-center items-center">
         <div class="text-center">
@@ -79,6 +79,8 @@
           @update:selected-version-index="selectedVersionIndex = $event"
           @show-version-detail="showVersionDetail"
           @confirm-version-selection="confirmVersionSelection"
+          @confirm-version-selection-and-generate-next="confirmVersionSelectionAndGenerateNext"
+          @go-to-next-chapter="goToNextChapter"
           @generate-chapter="generateChapter"
           @show-evaluation-detail="showEvaluationDetailModal = true"
           @fetch-chapter-status="fetchChapterStatus"
@@ -111,6 +113,36 @@
       @close="showGenerateOutlineModal = false"
       @generate="handleGenerateOutline"
     />
+    <div
+      v-if="project"
+      class="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t bg-white/95 backdrop-blur px-4 py-3"
+      style="border-top-color: var(--md-outline-variant);"
+    >
+      <div class="grid grid-cols-4 gap-2">
+        <button class="md-btn md-btn-outlined md-ripple" @click="toggleSidebar">目录</button>
+        <button
+          class="md-btn md-btn-outlined md-ripple"
+          :disabled="previousChapterNumber === null"
+          @click="goPreviousChapter"
+        >
+          上一章
+        </button>
+        <button
+          class="md-btn md-btn-outlined md-ripple"
+          :disabled="nextChapterNumberForMobile === null"
+          @click="goNextChapter"
+        >
+          下一章
+        </button>
+        <button
+          class="md-btn md-btn-filled md-ripple"
+          :disabled="selectedChapterNumber === null || generatingChapter !== null"
+          @click="handleMobilePrimaryAction"
+        >
+          {{ mobilePrimaryLabel }}
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -209,85 +241,85 @@ const completedChapters = computed(() => {
 
 const canExportTxt = computed(() => completedChapters.value > 0)
 
-const isCurrentVersion = (versionIndex: number) => {
-  if (!selectedChapter.value?.content || !availableVersions.value?.[versionIndex]?.content) return false
+const _contentCache = new Map<string, string>()
 
-  // 使用cleanVersionContent函数清理内容进行比较
-  const cleanCurrentContent = cleanVersionContent(selectedChapter.value.content)
-  const cleanVersionContentStr = cleanVersionContent(availableVersions.value[versionIndex].content)
+const cachedCleanContent = (raw: unknown): string => {
+  if (typeof raw !== 'string') return ''
+  const cached = _contentCache.get(raw)
+  if (cached !== undefined) return cached
 
-  return cleanCurrentContent === cleanVersionContentStr
-}
-
-const cleanVersionContent = (content: string): string => {
-  if (!content) return ''
-
-  // 尝试解析JSON，看是否是完整的章节对象
-  try {
-    const parsed = JSON.parse(content)
-    const extractContent = (value: any): string | null => {
-      if (!value) return null
-      if (typeof value === 'string') return value
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          const nested = extractContent(item)
-          if (nested) return nested
+  const trimmed = raw.trim()
+  let content = raw
+  if (trimmed && (trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      const extractContent = (value: unknown): string | null => {
+        if (!value) return null
+        if (typeof value === 'string') return value
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            const nested = extractContent(item)
+            if (nested) return nested
+          }
+          return null
+        }
+        if (typeof value === 'object') {
+          const rec = value as Record<string, unknown>
+          for (const key of ['content', 'chapter_content', 'chapter_text', 'text', 'body', 'story']) {
+            if (rec[key]) {
+              const nested = extractContent(rec[key])
+              if (nested) return nested
+            }
+          }
         }
         return null
       }
-      if (typeof value === 'object') {
-        for (const key of ['content', 'chapter_content', 'chapter_text', 'text', 'body', 'story']) {
-          if (value[key]) {
-            const nested = extractContent(value[key])
-            if (nested) return nested
-          }
-        }
-      }
-      return null
-    }
-    const extracted = extractContent(parsed)
-    if (extracted) {
-      // 如果是章节对象/数组，提取正文
-      content = extracted
-    }
-  } catch (error) {
-    // 如果不是JSON，继续处理字符串
+      const extracted = extractContent(parsed)
+      if (extracted) content = extracted
+    } catch { /* not JSON */ }
   }
 
-  // 去掉开头和结尾的引号
   let cleaned = content.replace(/^"|"$/g, '')
+  cleaned = cleaned.replace(/\\n/g, '\n')
+  cleaned = cleaned.replace(/\\"/g, '"')
+  cleaned = cleaned.replace(/\\t/g, '\t')
+  cleaned = cleaned.replace(/\\\\/g, '\\')
 
-  // 处理转义字符
-  cleaned = cleaned.replace(/\\n/g, '\n')  // 换行符
-  cleaned = cleaned.replace(/\\"/g, '"')   // 引号
-  cleaned = cleaned.replace(/\\t/g, '\t')  // 制表符
-  cleaned = cleaned.replace(/\\\\/g, '\\') // 反斜杠
-
+  if (_contentCache.size >= 100) {
+    _contentCache.delete(_contentCache.keys().next().value!)
+  }
+  _contentCache.set(raw, cleaned)
   return cleaned
 }
 
+const isCurrentVersion = (versionIndex: number) => {
+  if (!selectedChapter.value?.content || !availableVersions.value?.[versionIndex]?.content) return false
+  return cachedCleanContent(selectedChapter.value.content) === cachedCleanContent(availableVersions.value[versionIndex].content)
+}
+
+const sortedOutlines = computed(() =>
+  project.value?.blueprint?.chapter_outline
+    ? [...project.value.blueprint.chapter_outline].sort((a, b) => a.chapter_number - b.chapter_number)
+    : []
+)
+
+const completedChapterNumbers = computed(() =>
+  new Set(
+    project.value?.chapters
+      ?.filter(ch => ch.generation_status === 'successful')
+      .map(ch => ch.chapter_number) ?? []
+  )
+)
+
 const canGenerateChapter = (chapterNumber: number) => {
-  if (!project.value?.blueprint?.chapter_outline) return false
+  if (!sortedOutlines.value.length) return false
 
-  // 检查前面所有章节是否都已成功生成
-  const outlines = project.value.blueprint.chapter_outline.sort((a, b) => a.chapter_number - b.chapter_number)
-  
-  for (const outline of outlines) {
+  for (const outline of sortedOutlines.value) {
     if (outline.chapter_number >= chapterNumber) break
-    
-    const chapter = project.value?.chapters.find(ch => ch.chapter_number === outline.chapter_number)
-    if (!chapter || chapter.generation_status !== 'successful') {
-      return false // 前面有章节未完成
-    }
+    if (!completedChapterNumbers.value.has(outline.chapter_number)) return false
   }
 
-  // 检查当前章节是否已经完成
-  const currentChapter = project.value?.chapters.find(ch => ch.chapter_number === chapterNumber)
-  if (currentChapter && currentChapter.generation_status === 'successful') {
-    return true // 已完成的章节可以重新生成
-  }
-
-  return true // 前面章节都完成了，可以生成当前章节
+  return true
 }
 
 const isChapterFailed = (chapterNumber: number) => {
@@ -303,39 +335,6 @@ const hasChapterInProgress = (chapterNumber: number) => {
   return chapter && chapter.generation_status === 'waiting_for_confirm'
 }
 
-const extractVersionContent = (raw: unknown): string => {
-  if (typeof raw !== 'string') {
-    return ''
-  }
-  const trimmed = raw.trim()
-  if (!trimmed) {
-    return ''
-  }
-
-  const likelyJson = (
-    (trimmed.startsWith('{') && trimmed.endsWith('}'))
-    || (trimmed.startsWith('[') && trimmed.endsWith(']'))
-  )
-  if (!likelyJson) {
-    return raw
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (parsed && typeof parsed === 'object') {
-      const record = parsed as Record<string, unknown>
-      for (const key of ['content', 'chapter_content', 'chapter_text', 'text', 'body', 'story']) {
-        const candidate = record[key]
-        if (typeof candidate === 'string' && candidate.trim()) {
-          return candidate
-        }
-      }
-    }
-  } catch {
-    // ignore parse errors, fallback to raw text
-  }
-  return raw
-}
 
 // 可用版本列表（来源优先级：生成结果 > 章节 versions > 章节 content 兜底）
 const availableVersions = computed<ChapterVersion[]>(() => {
@@ -351,7 +350,7 @@ const availableVersions = computed<ChapterVersion[]>(() => {
   if (Array.isArray(chapter.versions) && chapter.versions.length > 0) {
     const converted = chapter.versions
       .map((versionRaw) => {
-        const content = extractVersionContent(versionRaw)
+        const content = cachedCleanContent(versionRaw)
         if (!content.trim()) {
           return null
         }
@@ -447,6 +446,28 @@ const selectChapter = (chapterNumber: number) => {
   closeSidebar()
 }
 
+const goPreviousChapter = () => {
+  if (previousChapterNumber.value !== null) {
+    selectChapter(previousChapterNumber.value)
+  }
+}
+
+const goNextChapter = () => {
+  if (nextChapterNumberForMobile.value !== null) {
+    selectChapter(nextChapterNumberForMobile.value)
+  }
+}
+
+const handleMobilePrimaryAction = async () => {
+  if (selectedChapterNumber.value === null) return
+  const chapter = project.value?.chapters.find(ch => ch.chapter_number === selectedChapterNumber.value)
+  if (chapter?.generation_status === 'waiting_for_confirm') {
+    chapterGenerationResult.value = null
+    return
+  }
+  await generateChapter(selectedChapterNumber.value)
+}
+
 const setLocalGeneratingState = (chapterNumber: number) => {
   if (!project.value?.chapters) {
     return
@@ -489,14 +510,7 @@ const resolveTargetWordCount = (targetWordCount?: number) => (
     : project.value?.blueprint?.chapter_length ?? 3000
 )
 
-const getSortedOutlineNumbers = (): number[] => {
-  if (!project.value?.blueprint?.chapter_outline) {
-    return []
-  }
-  return [...project.value.blueprint.chapter_outline]
-    .sort((a, b) => a.chapter_number - b.chapter_number)
-    .map(item => item.chapter_number)
-}
+const getSortedOutlineNumbers = (): number[] => sortedOutlines.value.map(item => item.chapter_number)
 
 const resolveBatchStartChapter = (): number | null => {
   const chapterNumbers = getSortedOutlineNumbers()
@@ -525,6 +539,31 @@ const getNextChapterNumber = (chapterNumber: number): number | null => {
   const chapterNumbers = getSortedOutlineNumbers()
   return chapterNumbers.find(number => number > chapterNumber) ?? null
 }
+
+const getPreviousChapterNumber = (chapterNumber: number): number | null => {
+  const chapterNumbers = getSortedOutlineNumbers()
+  const previous = chapterNumbers.filter(number => number < chapterNumber)
+  return previous.length ? previous[previous.length - 1] : null
+}
+
+const nextChapterNumberForMobile = computed(() => {
+  if (selectedChapterNumber.value === null) return null
+  return getNextChapterNumber(selectedChapterNumber.value)
+})
+
+const previousChapterNumber = computed(() => {
+  if (selectedChapterNumber.value === null) return null
+  return getPreviousChapterNumber(selectedChapterNumber.value)
+})
+
+const mobilePrimaryLabel = computed(() => {
+  if (selectedChapterNumber.value === null) return '生成'
+  const chapter = project.value?.chapters.find(ch => ch.chapter_number === selectedChapterNumber.value)
+  if (!chapter) return '生成'
+  if (chapter.generation_status === 'waiting_for_confirm') return '选版本'
+  if (chapter.generation_status === 'successful') return '重生成'
+  return '生成'
+})
 
 const waitForRetry = (ms: number) => new Promise((resolve) => {
   window.setTimeout(resolve, ms)
@@ -706,7 +745,7 @@ const generateChapter = async (chapterNumber: number, targetWordCount?: number) 
     const generatedChapter = project.value?.chapters.find(ch => ch.chapter_number === chapterNumber)
     const generatedVersions = Array.isArray(generatedChapter?.versions) ? generatedChapter.versions : []
     const validVersionCount = generatedVersions
-      .map((versionRaw) => extractVersionContent(versionRaw))
+      .map((versionRaw) => cachedCleanContent(versionRaw))
       .filter((content) => Boolean(content.trim()))
       .length
 
@@ -751,7 +790,13 @@ const regenerateChapter = async () => {
 
 const selectVersion = async (
   versionIndex: number,
-  options: { chapterNumber?: number; suppressSuccessToast?: boolean; skipAvailabilityCheck?: boolean } = {}
+  options: {
+    chapterNumber?: number
+    suppressSuccessToast?: boolean
+    skipAvailabilityCheck?: boolean
+    focusNextChapter?: boolean
+    autoGenerateNext?: boolean
+  } = {}
 ) => {
   const targetChapterNumber = options.chapterNumber ?? selectedChapterNumber.value
   if (targetChapterNumber === null) {
@@ -779,6 +824,15 @@ const selectVersion = async (
     // 轮询机制会处理状态变更，成功后会自动隐藏选择器
     // showVersionSelector.value = false
     chapterGenerationResult.value = null
+    const nextChapterNumber = getNextChapterNumber(targetChapterNumber)
+    if (options.autoGenerateNext && nextChapterNumber !== null && canGenerateChapter(nextChapterNumber)) {
+      selectedChapterNumber.value = nextChapterNumber
+      await generateChapter(nextChapterNumber)
+      return
+    }
+    if (options.focusNextChapter !== false && nextChapterNumber !== null) {
+      selectedChapterNumber.value = nextChapterNumber
+    }
     if (!options.suppressSuccessToast) {
       globalAlert.showSuccess('版本已确认', '操作成功')
     }
@@ -803,7 +857,27 @@ const selectVersionFromDetail = async () => {
 }
 
 const confirmVersionSelection = async () => {
-  await selectVersion(selectedVersionIndex.value)
+  await selectVersion(selectedVersionIndex.value, { focusNextChapter: true })
+}
+
+const confirmVersionSelectionAndGenerateNext = async () => {
+  await selectVersion(selectedVersionIndex.value, {
+    focusNextChapter: false,
+    autoGenerateNext: true,
+    suppressSuccessToast: true
+  })
+}
+
+const goToNextChapter = () => {
+  if (selectedChapterNumber.value === null) {
+    return
+  }
+  const nextChapterNumber = getNextChapterNumber(selectedChapterNumber.value)
+  if (nextChapterNumber !== null) {
+    selectedChapterNumber.value = nextChapterNumber
+    chapterGenerationResult.value = null
+    selectedVersionIndex.value = 0
+  }
 }
 
 const openEditChapterModal = (chapter: ChapterOutline) => {
@@ -916,6 +990,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.body.classList.remove('m3-novel')
+  _contentCache.clear()
 })
 </script>
 

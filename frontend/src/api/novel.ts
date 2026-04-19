@@ -112,6 +112,7 @@ export interface ChapterOutline {
   chapter_number: number
   title: string
   summary: string
+  status?: 'draft' | 'approved' | 'needs_regen'
 }
 
 export interface OutlineMissingRange {
@@ -435,6 +436,34 @@ export class NovelAPI {
     } = {}
   ): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/outline/expand`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  static async updateOutlineStatus(
+    projectId: string,
+    chapterNumbers: number[],
+    status: 'draft' | 'approved' | 'needs_regen'
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/outline/status`, {
+      method: 'POST',
+      body: JSON.stringify({
+        chapter_numbers: chapterNumbers,
+        status
+      })
+    })
+  }
+
+  static async rerollChapterOutline(
+    projectId: string,
+    payload: {
+      chapter_numbers?: number[]
+      batch_size?: number
+      only_needs_regen?: boolean
+    } = {}
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/outline/reroll`, {
       method: 'POST',
       body: JSON.stringify(payload)
     })

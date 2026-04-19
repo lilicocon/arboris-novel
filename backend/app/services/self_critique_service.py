@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .structured_llm_service import StructuredLLMService
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class SelfCritiqueService:
         self.db = db
         self.llm_service = llm_service
         self.prompt_service = prompt_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
     async def critique_chapter(
         self,
@@ -178,13 +180,9 @@ class SelfCritiqueService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                result["weight"] = dim_config["severity_weight"]
-                return result
+            result = self.structured_llm_service.parse_json(response)
+            result["weight"] = dim_config["severity_weight"]
+            return result
         except Exception as e:
             logger.warning(f"批评维度 {dimension.value} 失败: {e}")
         
@@ -194,7 +192,8 @@ class SelfCritiqueService:
             "issues": [],
             "strengths": [],
             "summary": "无法完成审查",
-            "weight": dim_config["severity_weight"]
+            "weight": dim_config["severity_weight"],
+            "is_fallback": True,
         }
 
     async def full_critique(
@@ -345,8 +344,24 @@ class SelfCritiqueService:
                 user_id=user_id,
                 timeout=180.0
             )
-            
-            return response.strip()
+
+            revised_content = response.strip()
+            # H14: reject revision if it scores more than 2 points below original
+            original_critique = await self.full_critique(
+                chapter_content=chapter_content, context=context, user_id=user_id
+            )
+            revised_critique = await self.full_critique(
+                chapter_content=revised_content, context=context, user_id=user_id
+            )
+            original_score = original_critique.get("weighted_score", 0)
+            new_score = revised_critique.get("weighted_score", 0)
+            if new_score < original_score - 2:
+                logger.warning(
+                    "revise_chapter: revision score %.1f < original %.1f - 2, reverting",
+                    new_score, original_score,
+                )
+                return chapter_content
+            return revised_content
         except Exception as e:
             logger.error(f"修改章节失败: {e}")
             return chapter_content
@@ -391,7 +406,8 @@ class SelfCritiqueService:
         }
         
         current_content = chapter_content
-        
+        previous_score: Optional[float] = None
+
         for iteration in range(max_iterations):
             iteration_data = {
                 "iteration": iteration + 1,
@@ -400,7 +416,7 @@ class SelfCritiqueService:
                 "score_before": 0,
                 "score_after": 0
             }
-            
+
             # 批评当前版本
             critique = await self.full_critique(
                 chapter_content=current_content,
@@ -408,30 +424,41 @@ class SelfCritiqueService:
                 context=context,
                 user_id=user_id
             )
-            
+
+            current_score = critique["weighted_score"]
+
+            # H15: break if score dropped compared to previous iteration
+            if previous_score is not None and current_score < previous_score:
+                logger.warning(
+                    "critique_and_revise_loop: score dropped from %.1f to %.1f, stopping",
+                    previous_score, current_score,
+                )
+                result["status"] = "score_decreased"
+                break
+
             iteration_data["critique"] = {
-                "weighted_score": critique["weighted_score"],
+                "weighted_score": current_score,
                 "critical_count": critique["critical_count"],
                 "major_count": critique["major_count"],
                 "minor_count": critique["minor_count"],
                 "needs_revision": critique["needs_revision"]
             }
-            iteration_data["score_before"] = critique["weighted_score"]
-            
+            iteration_data["score_before"] = current_score
+
             # 检查是否达到目标
-            if critique["weighted_score"] >= target_score and not critique["needs_revision"]:
-                iteration_data["score_after"] = critique["weighted_score"]
+            if current_score >= target_score and not critique["needs_revision"]:
+                iteration_data["score_after"] = current_score
                 result["iterations"].append(iteration_data)
                 result["status"] = "target_reached"
                 break
-            
+
             # 如果不需要修改，也停止
             if not critique["needs_revision"]:
-                iteration_data["score_after"] = critique["weighted_score"]
+                iteration_data["score_after"] = current_score
                 result["iterations"].append(iteration_data)
                 result["status"] = "acceptable"
                 break
-            
+
             # 修改章节
             revised_content = await self.revise_chapter(
                 chapter_content=current_content,
@@ -439,11 +466,11 @@ class SelfCritiqueService:
                 context=context,
                 user_id=user_id
             )
-            
+
             if revised_content and revised_content != current_content:
                 iteration_data["revised"] = True
                 current_content = revised_content
-                
+
                 # 重新评分
                 re_critique = await self.full_critique(
                     chapter_content=current_content,
@@ -453,11 +480,12 @@ class SelfCritiqueService:
                 )
                 iteration_data["score_after"] = re_critique["weighted_score"]
             else:
-                iteration_data["score_after"] = critique["weighted_score"]
+                iteration_data["score_after"] = current_score
                 result["iterations"].append(iteration_data)
                 result["status"] = "revision_failed"
                 break
-            
+
+            previous_score = iteration_data["score_after"]
             result["iterations"].append(iteration_data)
         
         # 设置最终结果
@@ -514,11 +542,7 @@ class SelfCritiqueService:
                 timeout=60.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return self.structured_llm_service.parse_json(response)
         except Exception as e:
             logger.warning(f"快速批评失败: {e}")
         
@@ -527,5 +551,6 @@ class SelfCritiqueService:
             "critical_issues": [],
             "ai_words_found": [],
             "has_hook": True,
-            "pass": True
+            "pass": True,
+            "is_fallback": True,
         }

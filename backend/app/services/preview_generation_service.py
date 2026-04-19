@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .structured_llm_service import StructuredLLMService
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class PreviewGenerationService:
         self.db = db
         self.llm_service = llm_service
         self.prompt_service = prompt_service
+        self.structured_llm_service = StructuredLLMService(llm_service)
 
     async def generate_preview(
         self,
@@ -98,13 +100,9 @@ class PreviewGenerationService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                result["status"] = "success"
-                return result
+            result = self.structured_llm_service.parse_json(response)
+            result["status"] = "success"
+            return result
         except Exception as e:
             logger.warning(f"生成章节预览失败: {e}")
         
@@ -182,20 +180,16 @@ class PreviewGenerationService:
                 timeout=90.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return self.structured_llm_service.parse_json(response)
         except Exception as e:
-            logger.warning(f"评估章节预览失败: {e}")
-        
-        return {
-            "overall_score": 70,
-            "approved": True,
-            "revision_needed": False,
-            "issues": []
-        }
+            logger.warning("评估章节预览失败: %s", e)
+            return {
+                "overall_score": 0,
+                "approved": False,
+                "revision_needed": True,
+                "evaluation_exception": True,
+                "issues": [{"severity": "critical", "description": f"预览评审异常: {e}"}]
+            }
 
     async def expand_preview_to_full_chapter(
         self,
@@ -340,13 +334,16 @@ class PreviewGenerationService:
             
             result["evaluation"] = evaluation
             
-            # 检查是否通过
-            if auto_approve or evaluation.get("approved", False):
-                break
-            
+            # critical 问题始终阻断（优先于 approved 和 auto_approve）
+            if not evaluation.get("evaluation_exception"):
+                _issues = evaluation.get("issues") or []
+                _has_critical = any(i.get("severity") == "critical" for i in _issues)
+                if not _has_critical and (evaluation.get("approved", False) or auto_approve):
+                    break
+
             # 如果有严重问题且还有重试机会，重新生成
             critical_issues = [
-                issue for issue in evaluation.get("issues", [])
+                issue for issue in (evaluation.get("issues") or [])
                 if issue.get("severity") == "critical"
             ]
             
@@ -354,12 +351,23 @@ class PreviewGenerationService:
                 break
             
             # 将修改建议加入风格提示
-            suggestions = evaluation.get("revision_suggestions", [])
+            suggestions = evaluation.get("revision_suggestions") or []
             if suggestions:
                 style_hint = style_hint + "\n注意：" + "；".join(suggestions)
         
         # 阶段 2：扩写正文
-        if result["preview"]:
+        # 必须同时满足：有预览 + 无评审异常 + (已批准 OR auto_approve 且无 critical 问题)
+        final_evaluation = result.get("evaluation") or {}
+        _fe_exception = final_evaluation.get("evaluation_exception", False)
+        _fe_approved = final_evaluation.get("approved", False)
+        _fe_has_critical = any(i.get("severity") == "critical" for i in (final_evaluation.get("issues") or []))
+        _can_expand = (
+            result["preview"] is not None
+            and not _fe_exception
+            and not _fe_has_critical
+            and (_fe_approved or auto_approve)
+        )
+        if _can_expand:
             full_chapter = await self.expand_preview_to_full_chapter(
                 preview=result["preview"],
                 outline=outline,
@@ -369,9 +377,10 @@ class PreviewGenerationService:
                 style_hint=style_hint,
                 user_id=user_id
             )
-            
             result["full_chapter"] = full_chapter
             result["status"] = "success" if full_chapter else "failed"
+        elif result["preview"]:
+            result["status"] = "preview_evaluation_failed"
         else:
             result["status"] = "preview_failed"
         
