@@ -225,7 +225,8 @@ const cleanVersionContent = (content: string): string => {
   if (!content) return ''
   try {
     const parsed = JSON.parse(content)
-    const extractContent = (value: any): string | null => {
+    // [M4] Use unknown + type guard instead of any for the recursive traversal
+    const extractContent = (value: unknown): string | null => {
       if (!value) return null
       if (typeof value === 'string') return value
       if (Array.isArray(value)) {
@@ -235,10 +236,11 @@ const cleanVersionContent = (content: string): string => {
         }
         return null
       }
-      if (typeof value === 'object') {
+      if (typeof value === 'object' && value !== null) {
+        const rec = value as Record<string, unknown>
         for (const key of ['content', 'chapter_content', 'chapter_text', 'text', 'body', 'story']) {
-          if (value[key]) {
-            const nested = extractContent(value[key])
+          if (rec[key]) {
+            const nested = extractContent(rec[key])
             if (nested) return nested
           }
         }

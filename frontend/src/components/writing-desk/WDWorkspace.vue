@@ -210,8 +210,12 @@ const handleCancelGeneration = async () => {
   try {
     await NovelAPI.cancelChapterGeneration(props.project.id, props.selectedChapterNumber)
     emit('fetchChapterStatus')
-  } catch {
-    // ignore — cancel endpoint best-effort
+  } catch (err) {
+    // [C9] Show error instead of silently swallowing; cancel is best-effort but user should know
+    globalAlert.showError(
+      `停止生成失败: ${err instanceof Error ? err.message : '未知错误'}`,
+      '停止失败'
+    )
   } finally {
     isCancellingGeneration.value = false
   }
@@ -234,7 +238,8 @@ const cleanVersionContent = (content: string): string => {
   if (!content) return ''
   try {
     const parsed = JSON.parse(content)
-    const extractContent = (value: any): string | null => {
+    // [M3] Use unknown + type guard instead of any
+    const extractContent = (value: unknown): string | null => {
       if (!value) return null
       if (typeof value === 'string') return value
       if (Array.isArray(value)) {
@@ -244,10 +249,11 @@ const cleanVersionContent = (content: string): string => {
         }
         return null
       }
-      if (typeof value === 'object') {
+      if (typeof value === 'object' && value !== null) {
+        const rec = value as Record<string, unknown>
         for (const key of ['content', 'chapter_content', 'chapter_text', 'text', 'body', 'story']) {
-          if (value[key]) {
-            const nested = extractContent(value[key])
+          if (rec[key]) {
+            const nested = extractContent(rec[key])
             if (nested) return nested
           }
         }
@@ -467,6 +473,10 @@ watch(
 
     if (needsPolling) {
       const chapterChanged = chapterNumber !== lastPollingChapterNumber.value
+      // [M2] Stop any existing polling before starting new one to prevent stale-chapter polls
+      if (chapterChanged) {
+        stopPolling()
+      }
       const shouldRequestImmediately =
         pollingTimer.value === null || chapterChanged
       startPolling(shouldRequestImmediately)
@@ -479,7 +489,11 @@ watch(
 )
 
 onUnmounted(() => {
-  stopPolling()
+  // [C10] Always clear unconditionally regardless of pollingTimer state
+  if (pollingTimer.value !== null) {
+    clearInterval(pollingTimer.value)
+    pollingTimer.value = null
+  }
 })
 
 const nextChapterNumber = computed(() => {

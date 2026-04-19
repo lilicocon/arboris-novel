@@ -565,8 +565,22 @@ const mobilePrimaryLabel = computed(() => {
   return '生成'
 })
 
-const waitForRetry = (ms: number) => new Promise((resolve) => {
-  window.setTimeout(resolve, ms)
+// [H9] cancelRetry flag lets stopBatchGenerate abort a pending retry delay
+const cancelRetry = ref(false)
+
+const waitForRetry = (ms: number) => new Promise<void>((resolve) => {
+  let check: number
+  const id = window.setTimeout(() => {
+    window.clearInterval(check)
+    resolve()
+  }, ms)
+  check = window.setInterval(() => {
+    if (cancelRetry.value) {
+      window.clearTimeout(id)
+      window.clearInterval(check)
+      resolve()
+    }
+  }, 50)
 })
 
 const getErrorMessage = (error: unknown): string => {
@@ -577,7 +591,12 @@ const getErrorMessage = (error: unknown): string => {
 }
 
 const getBestVariant = (result: AdvancedGenerateResponse) => {
-  return result.variants.find(item => item.index === result.best_version_index) ?? null
+  // [M5] Bounds-check best_version_index before using it
+  const variants = result.variants ?? []
+  if (variants.length === 0) return null
+  const idx = result.best_version_index ?? 0
+  const safeIdx = Math.min(Math.max(idx, 0), variants.length - 1)
+  return variants.find(item => item.index === safeIdx) ?? variants[safeIdx] ?? null
 }
 
 const runBatchChapterAttempt = async (chapterNumber: number, targetWordCount: number) => {
@@ -616,6 +635,7 @@ const startBatchGenerate = async (targetWordCount?: number) => {
   isBatchGenerating.value = true
   isBatchStopping.value = false
   batchStopRequested.value = false
+  cancelRetry.value = false  // [H9] reset cancellation flag at batch start
   batchCurrentChapterNumber.value = null
   batchAttempt.value = 0
   batchLastError.value = null
@@ -680,6 +700,7 @@ const startBatchGenerate = async (targetWordCount?: number) => {
     isBatchGenerating.value = false
     isBatchStopping.value = false
     batchStopRequested.value = false
+    cancelRetry.value = false  // [H9] reset for next run
     batchCurrentChapterNumber.value = null
     batchAttempt.value = 0
   }
@@ -690,6 +711,7 @@ const stopBatchGenerate = () => {
     return
   }
   batchStopRequested.value = true
+  cancelRetry.value = true  // [H9] abort any pending waitForRetry delay immediately
   isBatchStopping.value = true
 }
 
@@ -767,13 +789,20 @@ const generateChapter = async (chapterNumber: number, targetWordCount?: number) 
   } catch (error) {
     console.error('生成章节失败:', error)
 
-    // 错误状态的本地更新仍然是必要的，以立即反映UI
+    // Optimistically mark failed locally for immediate UI feedback
     if (project.value?.chapters) {
       const chapter = project.value.chapters.find(ch => ch.chapter_number === chapterNumber)
       if (chapter) {
         chapter.generation_status = 'failed'
         chapter.status_updated_at = new Date().toISOString()
       }
+    }
+
+    // [C8] Sync server state after failure so UI reflects actual backend status
+    try {
+      await novelStore.loadChapter(chapterNumber)
+    } catch {
+      // Best-effort; local state already updated
     }
 
     globalAlert.showError(`生成章节失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')

@@ -27,3 +27,4 @@ __pycache__/
 *.db
 /.idea/
 /.playwright-mcp/
+.ace-tool/

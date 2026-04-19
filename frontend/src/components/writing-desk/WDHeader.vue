@@ -48,14 +48,46 @@
             </svg>
             <span class="hidden md:inline">退出登录</span>
           </button>
-          <button
-            @click="toggleMobileMenu"
-            class="md-icon-btn md-ripple md:hidden"
-          >
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path d="M6 10a2 2 0 114 0 2 2 0 01-4 0zm4-6a2 2 0 100 4 2 2 0 000-4zm0 12a2 2 0 100 4 2 2 0 000-4z"></path>
-            </svg>
-          </button>
+
+          <!-- 移动端菜单 (Headless UI: role="menu", ESC, click-outside) -->
+          <Menu as="div" class="relative md:hidden">
+            <MenuButton class="md-icon-btn md-ripple" aria-label="菜单">
+              <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M6 10a2 2 0 114 0 2 2 0 01-4 0zm4-6a2 2 0 100 4 2 2 0 000-4zm0 12a2 2 0 100 4 2 2 0 000-4z"></path>
+              </svg>
+            </MenuButton>
+            <MenuItems
+              class="absolute right-0 top-14 w-44 rounded-xl border bg-white shadow-lg p-2 focus:outline-none"
+              style="border-color: var(--md-outline-variant);"
+            >
+              <MenuItem as="template" v-slot="{ active }">
+                <button
+                  :class="['w-full text-left px-3 py-2 rounded-lg text-sm', active ? 'bg-slate-100' : '']"
+                  @click="$emit('viewProjectDetail')"
+                >
+                  项目详情
+                </button>
+              </MenuItem>
+              <MenuItem as="template" :disabled="!canExportTxt" v-slot="{ active, disabled }">
+                <button
+                  :class="['w-full text-left px-3 py-2 rounded-lg text-sm', active && !disabled ? 'bg-slate-100' : '', disabled ? 'opacity-50 cursor-not-allowed' : '']"
+                  :disabled="disabled"
+                  @click="$emit('exportTxt')"
+                >
+                  导出 TXT
+                </button>
+              </MenuItem>
+              <MenuItem as="template" v-slot="{ active }">
+                <button
+                  :class="['w-full text-left px-3 py-2 rounded-lg text-sm text-rose-600', active ? 'bg-rose-50' : '']"
+                  @click="handleLogout"
+                >
+                  退出登录
+                </button>
+              </MenuItem>
+            </MenuItems>
+          </Menu>
+
           <button
             @click="$emit('toggleSidebar')"
             class="md-icon-btn md-ripple lg:hidden"
@@ -64,31 +96,6 @@
               <path fill-rule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd"></path>
             </svg>
           </button>
-          <div
-            v-if="mobileMenuOpen"
-            class="absolute right-0 top-14 md:hidden w-44 rounded-xl border bg-white shadow-lg p-2"
-            style="border-color: var(--md-outline-variant);"
-          >
-            <button
-              class="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-slate-100"
-              @click="handleMobileProjectDetail"
-            >
-              项目详情
-            </button>
-            <button
-              class="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-slate-100 disabled:opacity-50"
-              :disabled="!canExportTxt"
-              @click="handleMobileExport"
-            >
-              导出 TXT
-            </button>
-            <button
-              class="w-full text-left px-3 py-2 rounded-lg text-sm text-rose-600 hover:bg-rose-50"
-              @click="handleLogout"
-            >
-              退出登录
-            </button>
-          </div>
         </div>
       </div>
     </div>
@@ -96,7 +103,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { Menu, MenuButton, MenuItems, MenuItem } from '@headlessui/vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import type { NovelProject } from '@/api/novel'
@@ -104,26 +111,9 @@ import type { NovelProject } from '@/api/novel'
 const router = useRouter()
 const authStore = useAuthStore()
 
-const mobileMenuOpen = ref(false)
-
 const handleLogout = () => {
-  mobileMenuOpen.value = false
   authStore.logout()
   router.push('/login')
-}
-
-const toggleMobileMenu = () => {
-  mobileMenuOpen.value = !mobileMenuOpen.value
-}
-
-const handleMobileProjectDetail = () => {
-  mobileMenuOpen.value = false
-  emit('viewProjectDetail')
-}
-
-const handleMobileExport = () => {
-  mobileMenuOpen.value = false
-  emit('exportTxt')
 }
 
 interface Props {

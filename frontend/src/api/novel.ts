@@ -30,8 +30,19 @@ const request = async (url: string, options: RequestInit = {}) => {
   }
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
+    // [H10] Safely parse error body — server may return non-JSON on some errors
+    let errorBody: unknown
+    try {
+      errorBody = await response.json()
+    } catch {
+      errorBody = await response.text().catch(() => '')
+    }
+    const detail = (errorBody as Record<string, unknown>)?.detail
+    throw new Error(
+      typeof detail === 'string' && detail
+        ? detail
+        : `HTTP ${response.status}: ${JSON.stringify(errorBody)}`
+    )
   }
 
   return response.json()
@@ -56,8 +67,18 @@ const requestBlob = async (url: string, options: RequestInit = {}): Promise<Blob
   }
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
+    let errorBody: unknown
+    try {
+      errorBody = await response.json()
+    } catch {
+      errorBody = await response.text().catch(() => '')
+    }
+    const detail = (errorBody as Record<string, unknown>)?.detail
+    throw new Error(
+      typeof detail === 'string' && detail
+        ? detail
+        : `HTTP ${response.status}: ${JSON.stringify(errorBody)}`
+    )
   }
 
   return response.blob()
